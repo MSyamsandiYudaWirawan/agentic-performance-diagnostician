@@ -12,13 +12,13 @@
 
   <artifactId>evidence</artifactId>
   <name>evidence</name>
-  <description>Postgres evidence store: Flyway schema, JPA repositories, artifact store
+  <description>Postgres evidence store: Flyway schema, Spring Data JDBC repositories, artifact store
     (disk + sha256), run state machine (scope §4.4).</description>
 
   <dependencies>
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-data-jpa</artifactId>
+      <artifactId>spring-boot-starter-data-jdbc</artifactId>
     </dependency>
     <!-- Boot 4 split Flyway auto-config into its own module — needed for
          migrations to run on startup -->
@@ -54,5 +54,10 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+      <dependency>
+          <groupId>org.projectlombok</groupId>
+          <artifactId>lombok</artifactId>
+          <scope>annotationProcessor</scope>
+      </dependency>
   </dependencies>
 </project>
