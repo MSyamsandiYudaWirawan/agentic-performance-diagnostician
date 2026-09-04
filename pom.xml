@@ -28,7 +28,14 @@
          real version and import the BOM in agent-core when wiring tools. The
          property lives here so the version is declared in exactly one place. -->
     <spring-ai.version>SET-AT-STEP-8</spring-ai.version>
+    <!-- Spring Data resolves named :params on repository methods by reflection
+         on parameter names — requires javac -parameters (spring-boot-starter-parent
+         normally sets this; we don't extend it) -->
+    <maven.compiler.parameters>true</maven.compiler.parameters>
     <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
+    <!-- Boot 4 BOM manages spring-boot-testcontainers but NOT org.testcontainers
+         modules — pin the BOM here so test-scope containers resolve in one place -->
+    <testcontainers.version>1.20.6</testcontainers.version>
     <maven-surefire-plugin.version>3.5.3</maven-surefire-plugin.version>
   </properties>
 
@@ -38,6 +45,13 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-dependencies</artifactId>
         <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>

@@ -6,6 +6,7 @@ import org.springframework.data.relational.core.mapping.Table;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Map;
 
 @AllArgsConstructor
 @NoArgsConstructor
@@ -19,7 +20,7 @@ public class TrajectoryEvent {
     private String runId;
     private Instant ts;
     private String kind;
-    private Object payload;
+    private Map<String, Object> payload;
     private Long tokensIn;
     private Long tokensOut;
     private BigDecimal costUsd;
