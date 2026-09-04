@@ -1,0 +1,39 @@
+# Evidence store — ALWAYS-ON and OUTSIDE the measured envelope (scope §5, §10.16).
+#
+# Own compose project (`diag-evidence` via top-level `name:`), own volume,
+# resource-capped so its footprint is bounded and constant inside the Docker VM.
+# NEVER reference this file from a per-run target compose invocation: runs use
+# `-p <run-id>` + `down -v`, which would create an empty DB per run and destroy
+# it after (scope §9, "Concurrency & host hygiene").
+#
+# Start once, leave running:
+#   docker compose -f docker/evidence/docker-compose.yml up -d
+#
+# Port 5432 conflict check first (open-questions B9): if a local Postgres
+# already owns 5432, change the host port here or stop the local service.
+
+name: diag-evidence
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: diagnostician
+      POSTGRES_USER: diag
+      POSTGRES_PASSWORD: diag # local-only default; override via env/.env if you care
+    ports:
+      - "5432:5432"
+    volumes:
+      - diag-evidence-pgdata:/var/lib/postgresql/data
+    # Bounded + constant neighbor (scope §9): capped so benchmark noise from
+    # the shared Docker VM stays out of the noise-floor scale.
+    cpus: "0.5"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diag -d diagnostician"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  diag-evidence-pgdata:

@@ -1,0 +1,24 @@
+# Maven build output
+target/
+
+# Target apps are clones with their own git history (REF convention).
+# The agent works in targets/<name>; baselineSha lives in each clone's git.
+targets/
+
+# Evidence artifacts (JFR binaries, raw k6 JSON, build logs) — metadata and
+# hashes live in Postgres (scope §10.18)
+evidence/artifacts/
+*.jfr
+
+# Local env / secrets — API keys via env vars only, never in the repo
+docker/evidence/.env
+.env
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store

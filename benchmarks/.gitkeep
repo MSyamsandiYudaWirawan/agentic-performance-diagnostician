@@ -1,0 +1,3 @@
+# benchmarks/ holds committed k6 artifacts (one dir per target, e.g.
+# benchmarks/petclinic/load-test.js) and archived reference fixes.
+# "Artifact is the contract, never regenerate" (scope §5).
