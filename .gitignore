@@ -14,6 +14,9 @@ evidence/artifacts/
 docker/evidence/.env
 .env
 
+# Personal — CV/study notes (PII); anything in this folder never pushes
+docs/personal/
+
 # IDE
 .idea/
 *.iml
