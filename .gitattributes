@@ -1,0 +1,7 @@
+# Repo-wide LF in the working copy (text=auto normalizes the index to LF
+# anyway). Why forced: Windows autocrlf rewrites endings on re-checkout,
+# which silently changes the sha of benchmarks/petclinic/load-test.js —
+# the baseline-cache key (scope §10.24). Same class of gotcha the target
+# clones dodge with core.autocrlf=false (§10.33). No .bat/.cmd files in
+# this repo, so nothing needs CRLF.
+* text=auto eol=lf
