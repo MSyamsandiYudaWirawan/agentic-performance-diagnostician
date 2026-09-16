@@ -30,7 +30,7 @@ One row per app the agent diagnoses. Seeded once, never mutated during runs.
 |---|---|---|
 | `id` | varchar(40) PK | Short identifier — `S1`, `S2`, `S3`, `S4` |
 | `name` | varchar(256) | Human label — e.g. `stock-petclinic`, `petclinic-pool-starved` |
-| `base_repo` | varchar(500) | Path to the git clone — e.g. `targets/petclinic` |
+| `base_repo` | varchar(500) | Path to the git clone — e.g. `targets/spring-petclinic` |
 | `seed_patch` | text | Committed patch that degrades the app (S2/S3/S4). Null for S1 (stock). e.g. `hikari maximumPoolSize=2` for S2 |
 | `baseline_sha` | varchar(40) | Git commit the agent always reverts to between runs. `revertTo()` resets to this sha |
 | `ground_truth_category` | varchar(10) | Known bottleneck category — `H1`–`H7` (from `jfr-diagnose.sh` hypothesis menu). The answer the agent is scored against |
