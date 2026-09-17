@@ -3,7 +3,6 @@ package io.diag.evidence.service;
 import io.diag.evidence.RunStatus;
 import io.diag.evidence.dto.ChangeDto;
 import io.diag.evidence.dto.FilesTouchedDto;
-import io.diag.evidence.dto.FilesTouchedList;
 import io.diag.evidence.dto.HypothesisDto;
 import io.diag.evidence.dto.JfrReportDto;
 import io.diag.evidence.dto.LoadReportDto;
