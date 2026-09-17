@@ -25,6 +25,14 @@
       <artifactId>jackson-databind</artifactId>
     </dependency>
 
+    <!-- lombok: declared per-module (provided, non-transitive) so runner code
+         can use it without depending on evidence's declaration — IntelliJ's
+         importer also resolves this scope reliably, unlike annotationProcessor -->
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>

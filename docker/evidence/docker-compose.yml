@@ -29,6 +29,10 @@ services:
     # the shared Docker VM stays out of the noise-floor scale.
     cpus: "0.5"
     mem_limit: 512m
+    # "Always-on" made real: without this, a Docker Desktop restart (host
+    # reboot) leaves the evidence DB down and every gate/run fails on
+    # "Connection to localhost:5432 refused" — paid for once.
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U diag -d diagnostician"]
       interval: 5s
