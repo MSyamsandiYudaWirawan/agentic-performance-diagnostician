@@ -9,6 +9,18 @@ benchmark baseline -> capture JFR under load -> aggregate -> hypothesis
 -> apply one change -> rebuild -> re-benchmark -> keep or revert -> iterate
 ```
 
+**Design principles:**
+
+- **AI proposes, pipeline disposes.** No path from an LLM decision to
+  "improved" skips measurement — every change is committed, rebuilt,
+  smoke-gated, and re-benchmarked before keep/revert.
+- **The agent arrives last.** The deterministic core (benchmarks, JFR
+  aggregation, evidence store) is built and verify-gated before the first
+  LLM call — the model inherits an instrument, not a sandbox.
+- **The agent cannot edit its own ruler.** Load scripts and resource limits
+  live outside the target tree; read-back checks and post-run envelope
+  assertions turn manufactured "improvements" into gate failures.
+
 Every run's evidence (load reports, JFR aggregates, tool calls, token/cost
 trajectory) lands in a Postgres evidence store outside the measured envelope,
 and every run is auto-scored against seeded targets with known ground truth.
