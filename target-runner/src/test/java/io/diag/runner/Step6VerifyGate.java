@@ -3,6 +3,8 @@ package io.diag.runner;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.diag.evidence.dto.JfrReportDto;
 import io.diag.evidence.dto.SignalSummaryDto;
+import io.diag.runner.config.Thresholds;
+import io.diag.runner.service.JfrAnalyzer;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

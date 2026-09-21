@@ -1,4 +1,4 @@
-package io.diag.runner;
+package io.diag.runner.service;
 
 public final class BuildFailedException extends RuntimeException{
     public BuildFailedException(String message) {

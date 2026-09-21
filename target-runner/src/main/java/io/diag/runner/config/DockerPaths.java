@@ -1,4 +1,4 @@
-package io.diag.runner;
+package io.diag.runner.config;
 
 import java.nio.file.Path;
 import java.util.Objects;

@@ -1,4 +1,4 @@
-package io.diag.runner;
+package io.diag.runner.service;
 
 import java.io.IOException;
 

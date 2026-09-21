@@ -1,4 +1,4 @@
-package io.diag.runner;
+package io.diag.runner.config;
 
 /**
  * Severity cutoffs ported from REF jfr-diagnose.sh (env-overridable).

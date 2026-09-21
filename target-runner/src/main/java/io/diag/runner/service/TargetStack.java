@@ -1,4 +1,6 @@
-package io.diag.runner;
+package io.diag.runner.service;
+
+import io.diag.runner.config.DockerPaths;
 
 import java.io.IOException;
 import java.nio.file.Files;

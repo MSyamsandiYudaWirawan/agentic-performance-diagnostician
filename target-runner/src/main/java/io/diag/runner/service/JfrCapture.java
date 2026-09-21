@@ -1,5 +1,5 @@
-// target-runner/src/main/java/io/diag/runner/JfrCapture.java
-package io.diag.runner;
+// target-runner/src/main/java/io/diag/runner/service/JfrCapture.java
+package io.diag.runner.service;
 
 import io.diag.evidence.dto.JfrReportDto;
 import io.diag.evidence.entity.JfrReport;

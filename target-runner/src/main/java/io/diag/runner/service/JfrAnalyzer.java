@@ -1,9 +1,10 @@
-package io.diag.runner;
+package io.diag.runner.service;
 
 import io.diag.evidence.dto.JfrDiffDto;
 import io.diag.evidence.dto.JfrReportDto;
 import io.diag.evidence.dto.SignalDeltaDto;
 import io.diag.evidence.dto.SignalSummaryDto;
+import io.diag.runner.config.Thresholds;
 import jdk.jfr.consumer.RecordedClass;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordedFrame;

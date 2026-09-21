@@ -1,5 +1,8 @@
 package io.diag.runner;
 
+import io.diag.runner.config.DockerPaths;
+import io.diag.runner.service.TargetBuilder;
+import io.diag.runner.service.TargetStack;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;

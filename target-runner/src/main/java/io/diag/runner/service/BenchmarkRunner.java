@@ -1,4 +1,4 @@
-package io.diag.runner;
+package io.diag.runner.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
