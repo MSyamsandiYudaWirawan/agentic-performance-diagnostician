@@ -24,10 +24,11 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>21</maven.compiler.release>
     <spring-boot.version>4.1.1</spring-boot.version>
-    <!-- Spring AI: decision checkpoint at build step 8 (scope §10.8) — set the
-         real version and import the BOM in agent-core when wiring tools. The
-         property lives here so the version is declared in exactly one place. -->
-    <spring-ai.version>SET-AT-STEP-8</spring-ai.version>
+    <!-- Spring AI (§10.8): 2.x is the line that pairs with Boot 4 — the plan's
+         "1.0.x GA" predates the Boot-4 move. The property lives here so the
+         version is declared in exactly one place; the BOM import below
+         references it, never a literal. -->
+    <spring-ai.version>2.0.1</spring-ai.version>
     <!-- Spring Data resolves named :params on repository methods by reflection
          on parameter names — requires javac -parameters (spring-boot-starter-parent
          normally sets this; we don't extend it) -->
@@ -41,6 +42,13 @@
 
   <dependencyManagement>
     <dependencies>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-bom</artifactId>
+            <version>${spring-ai.version}</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
       <dependency>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-dependencies</artifactId>

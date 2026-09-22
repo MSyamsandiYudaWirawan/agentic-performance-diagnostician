@@ -2,80 +2,85 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
+    <modelVersion>4.0.0</modelVersion>
 
-  <parent>
-    <groupId>io.diag</groupId>
-    <artifactId>diagnostician-parent</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
-  </parent>
+    <parent>
+        <groupId>io.diag</groupId>
+        <artifactId>diagnostician-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
 
-  <artifactId>evidence</artifactId>
-  <name>evidence</name>
-  <description>Postgres evidence store: Flyway schema, Spring Data JDBC repositories, artifact store
-    (disk + sha256), run state machine (scope §4.4).</description>
+    <artifactId>evidence</artifactId>
+    <name>evidence</name>
+    <description>Postgres evidence store: Flyway schema, Spring Data JDBC repositories, artifact store
+        (disk + sha256), run state machine (scope §4.4).
+    </description>
 
-  <dependencies>
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-data-jdbc</artifactId>
-    </dependency>
-    <!-- Boot 4 split Flyway auto-config into its own module — needed for
-         migrations to run on startup -->
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-flyway</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.flywaydb</groupId>
-      <artifactId>flyway-core</artifactId>
-    </dependency>
-    <!-- NB: artifact is flyway-database-POSTGRESQL (renamed in Flyway 10+),
-         BOM-managed alongside flyway-core (12.4.0) -->
-    <dependency>
-      <groupId>org.flywaydb</groupId>
-      <artifactId>flyway-database-postgresql</artifactId>
-    </dependency>
-    <!-- compile scope (not runtime): jsonb reader converters take
-         org.postgresql.util.PGobject — the JDBC driver returns jsonb as
-         PGobject, never as String, so the converters must unwrap it -->
-    <dependency>
-      <groupId>org.postgresql</groupId>
-      <artifactId>postgresql</artifactId>
-    </dependency>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jdbc</artifactId>
+        </dependency>
+        <!-- Boot 4 split Flyway auto-config into its own module — needed for
+             migrations to run on startup -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <!-- NB: artifact is flyway-database-POSTGRESQL (renamed in Flyway 10+),
+             BOM-managed alongside flyway-core (12.4.0) -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!-- compile scope (not runtime): jsonb reader converters take
+             org.postgresql.util.PGobject — the JDBC driver returns jsonb as
+             PGobject, never as String, so the converters must unwrap it -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
 
-    <!-- LoadReport / JfrReport / ExperimentRecord payload contracts (JSONB payloads
-         are these records serialized verbatim — scope §4.4) -->
-    <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-test</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <!-- Step-1 verify gate: boot real Postgres in the test envelope only
-         (build-steps step 1), Flyway migrates, payloads round-trip -->
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-testcontainers</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.testcontainers</groupId>
-      <artifactId>postgresql</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.testcontainers</groupId>
-      <artifactId>junit-jupiter</artifactId>
-      <scope>test</scope>
-    </dependency>
-      <dependency>
-          <groupId>org.projectlombok</groupId>
-          <artifactId>lombok</artifactId>
-          <scope>provided</scope>
-      </dependency>
-  </dependencies>
+        <!-- LoadReport / JfrReport / ExperimentRecord payload contracts (JSONB payloads
+             are these records serialized verbatim — scope §4.4) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Step-1 verify gate: boot real Postgres in the test envelope only
+             (build-steps step 1), Flyway migrates, payloads round-trip -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+    </dependencies>
 </project>
