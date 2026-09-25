@@ -326,16 +326,14 @@ Honest and explicit beats a guessed price.
 ### 5.2 `Baseline` + `NoiseFloors` (pure records)
 
 ```java
-record NoiseFloors(double p95FloorMs, double rpsFloor, double p50FloorMs) {
-    static NoiseFloors fromBaselines(List<LoadReportDto> three) { …}
-}
+record NoiseFloors(double p95FloorMs, double rpsFloor, double p50FloorMs) { }
 
 // implemented 2026-09-24 as a plain final class: (reference, floors) only —
 // no `runs` field; the three source rows are persisted load_reports, the DB
-// is the audit trail (user decision, accepted).
+// is the audit trail (user decision, accepted). The fromBaselines floor math
+// lives in Baseline.of too — NoiseFloors is a pure data carrier.
 class Baseline { LoadReportDto reference; NoiseFloors floors;
-    static Baseline of(List<LoadReportDto> three) { … } }
-    static Baseline of(List<LoadReportDto> three) { …}
+    static Baseline of(List<LoadReportDto> three) { … }
 }
 ```
 
@@ -553,6 +551,14 @@ or Spring Data will INSERT and blow up on the PK. This is the exact trap the
    with no live compose project = a killed run (resume candidate), not an
    orphan to delete.
 
+Verified 2026-09-25 (M1 done): classification is the pure static
+`StartupJanitor.orphans(projectNames, activeRunId)` — tested without docker
+(`StartupJanitorTest`, 5 tests incl. null activeRunId = fresh start). Docker
+half hand-checked with a fake orphan project: compose v2 here resolves
+projects by name via labels, so `down -v --remove-orphans` exits 0 even with
+no compose files in CWD — the rm-by-label fallback never fires on this
+machine but was hand-verified too; diag-evidence untouched throughout.
+
 ---
 
 ## Part 6 — Keep-rule reference semantics (already in 5.2/5.3 — this is the summary card)
@@ -650,6 +656,12 @@ Kill-and-resume test (gate): start a dry run, kill after iteration 1 KEPT
 (don't transition status), `resume()` → tree matches lastKeptSha, iteration 2
 starts, single result set is coherent (no duplicate n, no phantom RUNNING).
 
+p50-floor resume gap (2026-09-24): the run row carries p95Floor and rpsFloor
+but not p50Floor (no V2 column for it). On resume, do not reconstruct
+NoiseFloors from run-row columns alone — reload the run's baseline-1..3
+load_report payloads and call `Baseline.of` again. The DB is the audit trail;
+the rows are already there.
+
 ---
 
 ## Part 10 — Build order: five milestones, each independently verifiable
@@ -665,6 +677,12 @@ finish only M0 this week, you own the part that matters most.
 Verify: Flyway migrates the real diag-evidence Postgres (`mvn -pl evidence
 test` integration test or manual psql `\d run`); janitor dry-run against a
 deliberately-stopped fake compose project.
+
+**STATUS (2026-09-25): gate green — M1 CLOSED.** `M1BaselinePersistenceTest`
+4/4 (isNew update-trap covered, bogus-runId message contract, clean
+overwrite, status machine intact); `StartupJanitorTest` 5/5; docker half
+hand-verified against a fake orphan (both teardown paths, diag-evidence
+untouched); full reactor green via `mvn -pl agent-core -am test`.
 
 **M2 — LLM seam (~1 evening).** `ChatPort`/`SpringAiChatPort`,
 `BoundedReadSource`, `SystemPrompts` (+hash), `DecideTurn`/
@@ -715,3 +733,4 @@ the scope doc §10 where they differ from its text.
 - `hikari-pool-size` / `jvm-opts` template admission — step 10 per-seed
   validation (§10.35). The prompt lists `jar-unpack` only because that's the
   only admitted template today.
+

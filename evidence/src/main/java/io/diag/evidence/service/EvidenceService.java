@@ -35,4 +35,8 @@ public interface EvidenceService {
 
     TrajectoryEvent createTrajectoryEvent(String runId, String kind, Map<String, Object> payload,
                                           Long tokensIn, Long tokensOut, BigDecimal costUsd);
+
+    void recordBaseline(String runId, double p95Ms, double p95FloorMs, double rps, double rpsFloor, String originSha);
+
+    void recordKeptSha(String runId, String sha);
 }

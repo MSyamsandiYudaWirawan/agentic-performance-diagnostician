@@ -39,6 +39,11 @@ public class Run implements Persistable<String> {
     private Double baselineP95Ms;
     private Double noiseFloorMs;
 
+    private String originSha;
+    private String lastKeptSha;
+    private Double baselineRps;
+    private Double noiseFloorRps;
+
     @Transient
     @Builder.Default
     private boolean isNew = true;

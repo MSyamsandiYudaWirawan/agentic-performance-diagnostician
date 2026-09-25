@@ -169,4 +169,32 @@ public class EvidenceServiceImpl implements EvidenceService {
                 .build();
         return trajectoryEventRepository.save(event);
     }
+
+    @Override
+    public void recordBaseline(String runId, double p95Ms, double p95FloorMs, double rps, double rpsFloor, String originSha) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        Objects.requireNonNull(originSha, "originSha must not be null");
+
+        Run run = runRepository.findById(runId).orElseThrow(
+                () -> new IllegalStateException("run " + runId + " not found — cannot record baseline"));
+        run.setBaselineP95Ms(p95Ms);
+        run.setNoiseFloorMs(p95FloorMs);
+        run.setBaselineRps(rps);
+        run.setNoiseFloorRps(rpsFloor);
+        run.setOriginSha(originSha);
+        run.setNew(false);
+        runRepository.save(run);
+    }
+
+    @Override
+    public void recordKeptSha(String runId, String sha) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        Objects.requireNonNull(sha, "sha must not be null");
+
+        Run run = runRepository.findById(runId).orElseThrow(
+                () -> new IllegalStateException("run " + runId + " not found — cannot record kept sha"));
+        run.setLastKeptSha(sha);
+        run.setNew(false);
+        runRepository.save(run);
+    }
 }

@@ -32,12 +32,14 @@ public final class Baseline {
         double refP99 = min(r0.latency().p99(), r1.latency().p99(), r2.latency().p99());
         double refFailRate = min(r0.failRate(), r1.failRate(), r2.failRate());
         double refCheckPassRate = max(r0.checkPassRate(), r1.checkPassRate(), r2.checkPassRate());
+        double refAvg = min(r0.latency().avg(), r1.latency().avg(), r2.latency().avg());
+        double refMax = min(r0.latency().max(), r1.latency().max(), r2.latency().max());
 
 
         LoadReportDto reference = new LoadReportDto(
                 r0.repo(),r0.dateUtc(),
                 refRps,r0.totalRequests(),
-                new LatencyDto(r0.latency().avg(),refP50,refP95,refP99,r0.latency().max()),
+                new LatencyDto(refAvg,refP50,refP95,refP99,refMax),
                 refFailRate,refCheckPassRate,
                 r0.thresholds()
         );
