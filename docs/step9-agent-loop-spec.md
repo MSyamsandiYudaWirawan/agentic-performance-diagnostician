@@ -279,16 +279,40 @@ persists a placeholder row with an empty payload, expecting the tool flow to
 fill it; the loop instead does `stopAndHarvest → analyze → createJfrReport`
 in one shot with the full payload — no empty-row dance, no row updates.
 
-**D7 — Explicit provider HTTP timeout.** Add a `RestClientCustomizer` bean in
-`AgentConfig` that sets connect/read timeouts (env `DIAG_LLM_TIMEOUT_MS`,
-default 120000) via `ClientHttpRequestFactorySettings`. Spring AI's
-auto-configured client uses the autoconfigured `RestClient.Builder`, so
-customizing the builder covers it. **Verify while implementing M2** (Spring AI
-2.0.1): if the starter builds its own factory, the fallback is setting the
-timeout on the `ChatModel` bean's client directly. A hang with no timeout
-burns the wall-clock guardrail silently — the exact failure this exists to
-prevent (measured motivation: the local dev config here runs a 50-minute
-provider timeout).
+**D7 — Explicit provider HTTP timeout.** Env `DIAG_LLM_TIMEOUT_MS`, default
+120000. A hang with no timeout burns the wall-clock guardrail silently — the
+exact failure this exists to prevent (measured motivation: the local dev
+config here runs a 50-minute provider timeout).
+
+VERIFIED 2026-09-25 (jar-level, spring-ai 2.0.1): the original guess — a
+`RestClientCustomizer` via `ClientHttpRequestFactorySettings` — is obsolete.
+The Anthropic module no longer uses RestClient; it wraps the official
+`com.anthropic:anthropic-java-core` (2.52.0) OkHttp client behind
+`SpringAiAnthropicHttpClient`, and `AnthropicChatAutoConfiguration.
+anthropicChatModel(...)` consumes an `ObjectProvider<
+AnthropicHttpClientBuilderCustomizer>` — that bean is the sanctioned seam:
+
+```java
+@Bean
+AnthropicHttpClientBuilderCustomizer llmTimeout(
+        @Value("${diag.agent.llm-timeout-ms:120000}") long ms) {
+    return b -> b.timeout(com.anthropic.core.Timeout.builder()
+            .connect(Duration.ofSeconds(10))
+            .read(Duration.ofMillis(ms))      // max gap between bytes
+            .request(Duration.ofMillis(ms))   // whole HTTP round trip
+            .build());
+}
+```
+
+(`org.springframework.ai.anthropic.http.okhttp.*` for both types; relaxed
+binding maps `DIAG_LLM_TIMEOUT_MS` → `diag.agent.llm-timeout-ms`.) One decide
+turn is several HTTP round trips — Spring AI loops tool calls client-side,
+each segment its own request — so this bounds one model-generation segment,
+not the turn; the wall-clock guardrail still owns the turn. Watch item (M4):
+`spring-ai-autoconfigure-retry` is on the classpath; if its RetryTemplate
+applies to chat calls its retries multiply with D3's loop-level backoff —
+inspect `spring.ai.retry.*` effective config before the real run, don't
+configure blind.
 
 **D8 — Mechanism signal names match by exact key only.** (User decision,
 2026-09-24, overriding the earlier exact-then-substring sketch.) The exact
@@ -414,11 +438,15 @@ interface ChatPort {
 
 `SpringAiChatPort` wraps the injected `ChatClient`:
 `.prompt().system(system).user(user).tools(toolBeans.toArray()).call()`
-→ content from `chatResponse()`, token usage from
-`chatResponse().getMetadata().getUsage()` (**verify exact accessor names
-against Spring AI 2.0.1 while writing M2** — content-only `.call().content()`
-is the step-8-proven fallback but discards usage). ~20 lines, the only class
-the dry-run gate doesn't cover; it gets exercised by the M4 real run.
+→ `ChatResult(text, tokensIn, tokensOut)` from one `ChatResponse`. Accessors
+VERIFIED 2026-09-25 against spring-ai 2.0.1 jars: `.call().chatResponse()`,
+`getResult().getOutput().getText()`, `getMetadata().getUsage()` →
+`getPromptTokens()`/`getCompletionTokens()` (`Integer` — null-safe them to 0;
+content-only `.call().content()` remains the fallback but discards usage).
+`Usage` also exposes `getCacheReadInputTokens()`/`getCacheWriteInputTokens()`
+— free prompt-caching numbers for the cost guardrail when prices arrive (C13).
+~20 lines, the only class the dry-run gate doesn't cover; it gets exercised by
+the M4 real run.
 
 ### 5.5 `BoundedReadSource` (the one tool the decide turn gets)
 
@@ -686,10 +714,21 @@ untouched); full reactor green via `mvn -pl agent-core -am test`.
 
 **M2 — LLM seam (~1 evening).** `ChatPort`/`SpringAiChatPort`,
 `BoundedReadSource`, `SystemPrompts` (+hash), `DecideTurn`/
-`SpringAiDecideTurn`, RestClient timeout (D7). Verify: unit tests with a
-`FakeChatPort` — valid decision passes; fenced-JSON passes; invalid→retry→
-WASTED-path result; infra-exception→backoff→infraFailure; bound cuts off at
-10; prompt-hash stable.
+`SpringAiDecideTurn`, provider timeout (D7). Split 2026-09-25:
+**M2a** = `ChatPort`/`SpringAiChatPort` + `BoundedReadSource` +
+`SystemPrompts`/`DecideContext`/`HistoryEntry` + D7 bean;
+**M2b** = `DecideTurn`/`SpringAiDecideTurn` + the `FakeChatPort` battery.
+Verify: unit tests with a `FakeChatPort` — valid decision passes; fenced-JSON
+passes; invalid→retry→ WASTED-path result; infra-exception→backoff→
+infraFailure; bound cuts off at 10; prompt-hash stable.
+
+**STATUS (2026-09-29): gate green — M2 CLOSED.** All M2 components
+implemented and verified: `LoopConfig` (10 tests), `AgentConfig` `llmTimeout`
+customizer (4 tests), `SystemPrompts` hash stability + NON_NULL JSON context
+(4 tests), `BoundedReadSource` with cap + trajectory events (7 tests),
+`SpringAiDecideTurn` two-track retry policy + cost tracking + interrupt
+handling (10 tests), Context & Result validation (7 tests); `agent-core` 61/61
+tests green, full reactor green via `mvn test`.
 
 **M3 — the loop, dry (~2–3 evenings; this is the build-step verify gate).**
 `AgentLoop` + `TargetPipeline` + `DockerTargetPipeline` + `FakeTargetPipeline`
