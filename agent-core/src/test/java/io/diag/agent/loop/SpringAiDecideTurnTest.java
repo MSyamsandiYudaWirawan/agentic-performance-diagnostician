@@ -123,6 +123,31 @@ class SpringAiDecideTurnTest {
     }
 
     @Test
+    void proseBeforeAndAfterFencedJson_extractedAndParsed() {
+        String output = "The analysis of the baseline shows lock contention on UrlJarFiles$Cache.\n"
+                + "```json\n" + VALID_JSON + "\n```\n"
+                + "This change is predicted to eliminate the lock.";
+        chatPort.enqueue(output, 100, 50);
+
+        DecideTurn.DecideResult result = turn.decide(1, ctx);
+
+        assertThat(result.decision()).isNotNull();
+        assertThat(result.decision().hypothesis().category()).isEqualTo("H5");
+        assertThat(result.infraFailure()).isFalse();
+    }
+
+    @Test
+    void proseBeforeUnfencedJson_extractedAndParsed() {
+        String output = "Here is my final decision:\n" + VALID_JSON;
+        chatPort.enqueue(output, 100, 50);
+
+        DecideTurn.DecideResult result = turn.decide(1, ctx);
+
+        assertThat(result.decision()).isNotNull();
+        assertThat(result.decision().hypothesis().category()).isEqualTo("H5");
+    }
+
+    @Test
     void invalidJson_retriedOnce_thenWasted() {
         chatPort.enqueue(INVALID_JSON, 50, 20);
         chatPort.enqueue(INVALID_JSON, 50, 20);

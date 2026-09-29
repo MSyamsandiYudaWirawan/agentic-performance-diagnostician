@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.diag.agent.decision.DecisionValidator;
 import io.diag.agent.tools.DiagnosticTools;
 import io.diag.evidence.service.EvidenceService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -23,6 +25,8 @@ import java.util.Objects;
  */
 @Component
 public class SpringAiDecideTurn implements DecideTurn {
+
+    private static final Logger log = LoggerFactory.getLogger(SpringAiDecideTurn.class);
 
     /** Pluggable sleep — real impl uses Thread::sleep; tests inject a no-op. */
     @FunctionalInterface
@@ -96,13 +100,13 @@ public class SpringAiDecideTurn implements DecideTurn {
         totalTokensOut += first.tokensOut;
 
         if (!first.ok) {
-            logLlmResp(totalTokensIn, totalTokensOut);
+            logLlmResp(totalTokensIn, totalTokensOut, null);
             return new DecideResult(null, first.error, true, totalTokensIn, totalTokensOut, null);
         }
 
-        logLlmResp(totalTokensIn, totalTokensOut);
-
         String rawText = first.text;
+        logLlmResp(totalTokensIn, totalTokensOut, rawText);
+
         String stripped = stripFences(rawText);
         var envelope = validator.validate(stripped);
 
@@ -111,21 +115,27 @@ public class SpringAiDecideTurn implements DecideTurn {
                     totalTokensIn, totalTokensOut, rawText);
         }
 
+        log.warn("Attempt 1 decision validation failed at iteration {}: {}. Raw text:\n{}",
+                n, envelope.error(), rawText);
+
         // --- Track 2: one model retry with the validation error appended ---
         String retryPrompt = userContext
-                + "\n\n[Previous decision invalid: " + envelope.error()
-                + ". You must output EXACTLY ONE valid Decision JSON object.]";
+                + "\n\n[CRITICAL: Your previous decision was rejected with error: " + envelope.error()
+                + ".\nYou must output ONLY the raw JSON object starting with '{' and ending with '}'. "
+                + "Do NOT write any explanation, markdown prose, or conversational text before or after the JSON.]";
 
         InfraResult second = callWithInfraRetry(retryPrompt, List.of(reader));
         totalTokensIn  += second.tokensIn;
         totalTokensOut += second.tokensOut;
-        logLlmResp(totalTokensIn, totalTokensOut);
 
         if (!second.ok) {
+            logLlmResp(totalTokensIn, totalTokensOut, null);
             return new DecideResult(null, second.error, true, totalTokensIn, totalTokensOut, null);
         }
 
         String rawText2  = second.text;
+        logLlmResp(totalTokensIn, totalTokensOut, rawText2);
+
         String stripped2 = stripFences(rawText2);
         var envelope2    = validator.validate(stripped2);
 
@@ -133,6 +143,9 @@ public class SpringAiDecideTurn implements DecideTurn {
             return new DecideResult(envelope2.data(), null, false,
                     totalTokensIn, totalTokensOut, rawText2);
         }
+
+        log.warn("Attempt 2 decision validation failed at iteration {}: {}. Raw text:\n{}",
+                n, envelope2.error(), rawText2);
 
         // Both attempts produced invalid JSON — WASTED, run continues.
         return new DecideResult(null,
@@ -172,11 +185,15 @@ public class SpringAiDecideTurn implements DecideTurn {
     // Helpers
     // -------------------------------------------------------------------------
 
-    private void logLlmResp(long tokensIn, long tokensOut) {
+    private void logLlmResp(long tokensIn, long tokensOut, String rawText) {
         BigDecimal cost = computeCost(tokensIn, tokensOut);
-        trajectory.createTrajectoryEvent(runId, "LLM_RESP",
-                Map.of("tokensIn", tokensIn, "tokensOut", tokensOut),
-                tokensIn, tokensOut, cost);
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("tokensIn", tokensIn);
+        payload.put("tokensOut", tokensOut);
+        if (rawText != null && !rawText.isBlank()) {
+            payload.put("rawText", rawText.length() > 2000 ? rawText.substring(0, 2000) + "..." : rawText);
+        }
+        trajectory.createTrajectoryEvent(runId, "LLM_RESP", payload, tokensIn, tokensOut, cost);
     }
 
     private BigDecimal computeCost(long tokensIn, long tokensOut) {
@@ -194,20 +211,46 @@ public class SpringAiDecideTurn implements DecideTurn {
         return inCost.add(outCost);
     }
 
-    /** Strip leading ```json or ``` fence and trailing ``` fence, then trim. */
-    private static String stripFences(String raw) {
+    /**
+     * Extracts JSON content from raw LLM output (§5.7).
+     * Handles:
+     * 1. Markdown code fences with prose before/after (e.g. "The analysis shows...\n```json\n{...}\n```")
+     * 2. Direct code fences (e.g. "```json\n{...}\n```")
+     * 3. Unfenced JSON surrounded by prose (e.g. "The decision is: {...}")
+     * 4. Pure raw JSON (e.g. "{...}")
+     */
+    static String stripFences(String raw) {
         if (raw == null) return "";
         String s = raw.trim();
-        if (s.startsWith("```")) {
-            int newline = s.indexOf('\n');
-            if (newline != -1) {
-                s = s.substring(newline + 1);
+
+        // 1. Look for ```[json] ... ``` anywhere in the response
+        int fenceStart = s.indexOf("```");
+        if (fenceStart != -1) {
+            int afterFence = s.indexOf('\n', fenceStart);
+            if (afterFence != -1) {
+                int fenceEnd = s.indexOf("```", afterFence);
+                if (fenceEnd != -1) {
+                    String inside = s.substring(afterFence + 1, fenceEnd).trim();
+                    int firstBrace = inside.indexOf('{');
+                    int lastBrace  = inside.lastIndexOf('}');
+                    if (firstBrace != -1 && lastBrace >= firstBrace) {
+                        return inside.substring(firstBrace, lastBrace + 1).trim();
+                    }
+                    if (!inside.isEmpty()) {
+                        return inside;
+                    }
+                }
             }
         }
-        if (s.endsWith("```")) {
-            s = s.substring(0, s.length() - 3);
+
+        // 2. If no valid code fence or fence didn't contain braces, locate the outermost JSON object
+        int firstBrace = s.indexOf('{');
+        int lastBrace  = s.lastIndexOf('}');
+        if (firstBrace != -1 && lastBrace >= firstBrace) {
+            return s.substring(firstBrace, lastBrace + 1).trim();
         }
-        return s.trim();
+
+        return s;
     }
 
     // -------------------------------------------------------------------------
