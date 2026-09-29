@@ -34,6 +34,11 @@ public class BoundedReadSource {
         this.bound = bound;
     }
 
+    private static boolean isDebugEnabled() {
+        return Boolean.getBoolean("diag.debug")
+                || "true".equalsIgnoreCase(System.getenv("DIAG_DEBUG"));
+    }
+
     @Tool(description = """
             Read a file from the target repository. Path must be relative to the
             target root (e.g. src/main/java/Foo.java or Dockerfile.target).
@@ -44,18 +49,33 @@ public class BoundedReadSource {
     public ToolEnvelope<String> readSource(String path) {
         callCount++;
 
+        if (isDebugEnabled()) {
+            System.out.println("[DIAG DEBUG: TOOL CALL] readSource(\"" + path + "\") [call " + callCount + "/" + bound + "]");
+        }
+
         // Log TOOL_CALL before any guard — the call happened regardless of outcome.
         trajectory.createTrajectoryEvent(runId, "TOOL_CALL",
                 Map.of("path", path == null ? "" : path), null, null, null);
 
         if (callCount > bound) {
             String msg = "tool-call bound (" + bound + ") exceeded — decide now";
+            if (isDebugEnabled()) {
+                System.out.println("[DIAG DEBUG: TOOL RESULT] " + msg);
+            }
             trajectory.createTrajectoryEvent(runId, "TOOL_RESULT",
                     Map.of("ok", false, "error", msg), null, null, null);
             return ToolEnvelope.fail(msg);
         }
 
         ToolEnvelope<String> result = tools.readSource(path);
+
+        if (isDebugEnabled()) {
+            if (result.ok()) {
+                System.out.println("[DIAG DEBUG: TOOL RESULT] readSource(\"" + path + "\") -> OK (" + result.data().length() + " chars)");
+            } else {
+                System.out.println("[DIAG DEBUG: TOOL RESULT] readSource(\"" + path + "\") -> FAIL: " + result.error());
+            }
+        }
 
         Map<String, Object> resultPayload;
         if (result.ok()) {
