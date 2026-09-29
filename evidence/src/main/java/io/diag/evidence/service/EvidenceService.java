@@ -16,6 +16,7 @@ import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 public interface EvidenceService {
 
@@ -39,4 +40,11 @@ public interface EvidenceService {
     void recordBaseline(String runId, double p95Ms, double p95FloorMs, double rps, double rpsFloor, String originSha);
 
     void recordKeptSha(String runId, String sha);
+
+    // query methods for resume (§10.19)
+    default Optional<Run> findRun(String runId) { return Optional.empty(); }
+    default Optional<Run> findRunningRun() { return Optional.empty(); }
+    default List<Iteration> findIterations(String runId) { return List.of(); }
+    default List<LoadReport> findLoadReports(String runId) { return List.of(); }  // ordered by id asc (insertion order)
+    default Optional<JfrReport> findJfrReport(String runId, String label) { return Optional.empty(); }
 }

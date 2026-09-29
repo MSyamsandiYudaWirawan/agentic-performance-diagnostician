@@ -31,6 +31,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -131,8 +132,14 @@ public class EvidenceServiceImpl implements EvidenceService {
                                      Long loadReportId, Long jfrReportId,
                                      List<FilesTouchedDto> filesTouched, String keepType, String finding) {
         Objects.requireNonNull(runId, "runId must not be null");
-        Objects.requireNonNull(hypothesis, "hypothesis must not be null");
-        Objects.requireNonNull(change, "change must not be null");
+        Objects.requireNonNull(outcome, "outcome must not be null");
+        // WASTED iterations pass nulls for hypothesis and change per spec §1 (line 98)
+        if (!"WASTED".equals(outcome)) {
+            Objects.requireNonNull(hypothesis, "hypothesis must not be null for outcome " + outcome);
+            Objects.requireNonNull(change, "change must not be null for outcome " + outcome);
+        }
+
+        List<FilesTouchedDto> filesList = filesTouched != null ? filesTouched : List.of();
 
         Iteration iteration = Iteration.builder()
                 .runId(runId)
@@ -144,7 +151,7 @@ public class EvidenceServiceImpl implements EvidenceService {
                 .treeSha(treeSha)
                 .loadReportId(loadReportId)
                 .jfrReportId(jfrReportId)
-                .filesTouched(FilesTouchedList.of(filesTouched))
+                .filesTouched(FilesTouchedList.of(filesList))
                 .keepType(keepType)
                 .finding(finding)
                 .createdAt(Instant.now())
@@ -196,5 +203,35 @@ public class EvidenceServiceImpl implements EvidenceService {
         run.setLastKeptSha(sha);
         run.setNew(false);
         runRepository.save(run);
+    }
+
+    @Override
+    public Optional<Run> findRun(String runId) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        return runRepository.findById(runId);
+    }
+
+    @Override
+    public Optional<Run> findRunningRun() {
+        return runRepository.findFirstByStatus(RunStatus.RUNNING.name());
+    }
+
+    @Override
+    public List<Iteration> findIterations(String runId) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        return iterationRepository.findByRunIdOrderByNAsc(runId);
+    }
+
+    @Override
+    public List<LoadReport> findLoadReports(String runId) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        return loadReportRepository.findByRunIdOrderByIdAsc(runId);
+    }
+
+    @Override
+    public Optional<JfrReport> findJfrReport(String runId, String label) {
+        Objects.requireNonNull(runId,  "runId must not be null");
+        Objects.requireNonNull(label,  "label must not be null");
+        return jfrReportRepository.findByRunIdAndLabel(runId, label);
     }
 }

@@ -750,6 +750,13 @@ tests green, full reactor green via `mvn test`.
    Verify: `mvn -pl agent-core -am test "-Dtest=Step9VerifyGate"` green, no
    Docker, no DB, no API key.
 
+**STATUS (2026-09-29): gate green — M3 CLOSED.** `Step9VerifyGate` 8/8 scenarios
+green (happy path KEPT, regression REVERTED, invalid decision x2 WASTED, no-op
+edit WASTED, build failure REVERTED, guardrail cap ABORTED, kill-and-resume,
+trajectory events); `AgentLoop` state machine + `TargetPipeline` seams
+(`DockerTargetPipeline`, `FakeTargetPipeline`); `EvidenceService` query methods
+for resume (§10.19); all 69 tests across `agent-core` green, full reactor green.
+
 **M4 — one real S1 run (opt-in gate, ~30 min).** Wire `DockerTargetPipeline`
 (construct chain exactly like the step-8 gate), boot `AgentGateApp` context,
 `agentLoop.start()` against `targets/spring-petclinic`, watch it run ≤5
