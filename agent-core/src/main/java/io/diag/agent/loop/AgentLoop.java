@@ -82,7 +82,26 @@ public final class AgentLoop {
                 genParams.toMap());
         runId       = run.getId();
         lastKeptSha = originSha;
+        return runLoop(originSha);
+    }
 
+    /**
+     * Starts the loop against an already-created run (e.g. constructed run-scoped like the Step 8 gate).
+     *
+     * @param preCreatedRunId the runId already recorded in EvidenceService
+     * @return the active runId
+     * @throws Exception if baseline or iteration fails
+     */
+    public String start(String preCreatedRunId) throws Exception {
+        Objects.requireNonNull(preCreatedRunId, "preCreatedRunId must not be null");
+        initRunState();
+        runId       = preCreatedRunId;
+        String originSha = changeApplier.currentSha(targetRepo);
+        lastKeptSha = originSha;
+        return runLoop(originSha);
+    }
+
+    private String runLoop(String originSha) throws Exception {
         try {
             baselinePhase(originSha);
             iterate(1);
