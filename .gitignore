@@ -8,6 +8,7 @@ targets/
 # Evidence artifacts (JFR binaries, raw k6 JSON, build logs) — metadata and
 # hashes live in Postgres (scope §10.18)
 evidence/artifacts/
+**/evidence/artifacts/
 *.jfr
 
 # Local env / secrets — API keys via env vars only, never in the repo

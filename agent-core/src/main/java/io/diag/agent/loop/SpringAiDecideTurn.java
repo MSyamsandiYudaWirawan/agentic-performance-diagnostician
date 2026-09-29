@@ -1,6 +1,7 @@
 package io.diag.agent.loop;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.diag.agent.decision.DecisionDto;
 import io.diag.agent.decision.DecisionValidator;
 import io.diag.agent.tools.DiagnosticTools;
 import io.diag.evidence.service.EvidenceService;
@@ -83,67 +84,219 @@ public class SpringAiDecideTurn implements DecideTurn {
         Objects.requireNonNull(ctx, "ctx must not be null");
         String userContext = SystemPrompts.buildUserContext(ctx);
         BoundedReadSource reader = new BoundedReadSource(
-                diagnosticTools, loopConfig.toolCallBound(), trajectory, runId);
+                diagnosticTools, loopConfig.toolCallBound(), trajectory, runId, userContext);
         trajectory.createTrajectoryEvent(runId, "LLM_REQ",
                 Map.of("iteration", n), 0L, 0L, BigDecimal.ZERO);
-        return decideInternal(n, userContext, reader, ctx);
+        String fullUserPrompt = buildFullUserPrompt(userContext, n, ctx);
+        return decideInternal(n, fullUserPrompt, reader, ctx);
     }
 
-    private DecideResult decideInternal(int n, String userContext,
+    private String buildFullUserPrompt(String userContext, int iteration, DecideContext ctx) {
+        StringBuilder sb = new StringBuilder();
+
+        if (iteration == 1) {
+            sb.append(userContext).append("\n\n");
+            List<String> repoFiles = diagnosticTools.listRepositoryFiles();
+            if (repoFiles != null && !repoFiles.isEmpty()) {
+                sb.append("REPOSITORY STRUCTURE:\n");
+                for (String file : repoFiles) {
+                    sb.append("- ").append(file).append("\n");
+                }
+                sb.append("\n");
+            }
+        } else {
+            sb.append("--- ITERATION ").append(iteration).append(" OF ").append(ctx.maxIterations()).append(" ---\n");
+            sb.append("Target: ").append(ctx.targetName()).append("\n");
+            sb.append(String.format("Reference: RPS=%.1f, p95=%.1f ms, verdict=%s\n",
+                    ctx.reference().rps(), ctx.reference().latency().p95(), ctx.reference().thresholds().verdict()));
+            sb.append("Hypothesis Ledger: ").append(ctx.ledger()).append("\n");
+            if (ctx.history() != null && !ctx.history().isEmpty()) {
+                sb.append("Recent History:\n");
+                for (HistoryEntry h : ctx.history()) {
+                    sb.append("  - Iteration ").append(h.n())
+                            .append(": [").append(h.hypothesisCategory()).append("] ")
+                            .append(h.outcome());
+                    if (h.note() != null) {
+                        sb.append(" (").append(h.note()).append(")");
+                    }
+                    sb.append("\n");
+                }
+            }
+            sb.append("\nREPOSITORY STRUCTURE & FULL JFR CONTEXT:\n");
+            sb.append("(Omitted to conserve context. Call recallContext() to inspect full JFR signals and metrics, listRepositoryStructure() to recall repo files, or readSource(path) to inspect suspect files.)\n\n");
+        }
+
+        sb.append("""
+                INVESTIGATION & OUTPUT INSTRUCTIONS:
+                1. You may call readSource(path), recallContext(), or listRepositoryStructure() to inspect files, review diagnostic data, or recall project layout.
+                2. After inspecting files, your FINAL response MUST BE STRICTLY AND ONLY A SINGLE JSON OBJECT.
+                3. DO NOT write any intro text, reasoning, thoughts, or bullet points before or after the JSON.
+                4. Put all your diagnostic reasoning INSIDE the "rationale" and "reason" fields of the JSON.
+
+                EXAMPLE VALID RESPONSE:
+                {
+                  "hypothesis": {
+                    "category": "H5",
+                    "confidence": 0.9,
+                    "rationale": "JavaMonitorEnter lock contention on UrlJarFiles$Cache inside Spring Boot loader"
+                  },
+                  "prediction": {
+                    "metricToImprove": "p95",
+                    "direction": "improve",
+                    "mechanismSignalToEliminate": "JavaMonitorEnter"
+                  },
+                  "ledger": {
+                    "category": "H5",
+                    "direction": "strengthen",
+                    "reason": "UrlJarFiles$Cache monitor wait is the primary bottleneck"
+                  },
+                  "change": {
+                    "kind": "template",
+                    "template": "jar-unpack",
+                    "params": {}
+                  }
+                }
+
+                YOUR OUTPUT MUST START WITH '{' AND END WITH '}'. OUTPUT THE JSON OBJECT NOW:
+                """);
+        return sb.toString();
+    }
+
+    private DecideResult decideInternal(int n, String fullUserPrompt,
                                         BoundedReadSource reader, DecideContext ctx) {
         long totalTokensIn  = 0L;
         long totalTokensOut = 0L;
 
         // --- Track 1: infrastructure retry for first call ---
-        InfraResult first = callWithInfraRetry(userContext, List.of(reader));
+        LlmDebugLogger.log(runId, "LLM PROMPT (Iteration " + n + ", Attempt 1)", fullUserPrompt);
+
+        InfraResult first = callWithInfraRetry(fullUserPrompt, List.of(reader));
         totalTokensIn  += first.tokensIn;
         totalTokensOut += first.tokensOut;
 
         if (!first.ok) {
+            LlmDebugLogger.log(runId, "LLM INFRA ERROR (Iteration " + n + ", Attempt 1)", first.error);
             logLlmResp(totalTokensIn, totalTokensOut, null);
             return new DecideResult(null, first.error, true, totalTokensIn, totalTokensOut, null);
         }
 
         String rawText = first.text;
+        LlmDebugLogger.log(runId, "LLM RESPONSE (Iteration " + n + ", Attempt 1)",
+                "Tokens in: " + first.tokensIn + ", out: " + first.tokensOut + "\n" + rawText);
         logLlmResp(totalTokensIn, totalTokensOut, rawText);
 
         String stripped = stripFences(rawText);
         var envelope = validator.validate(stripped);
 
+        if (!envelope.ok()) {
+            DecisionDto fallback = FallbackDecisionExtractor.tryExtract(rawText);
+            if (fallback != null) {
+                try {
+                    String fallbackJson = mapper.writeValueAsString(fallback);
+                    var fallbackEnvelope = validator.validate(fallbackJson);
+                    if (fallbackEnvelope.ok()) {
+                        envelope = fallbackEnvelope;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
         if (envelope.ok()) {
+            LlmDebugLogger.log(runId, "DECISION ACCEPTED (Iteration " + n + ", Attempt 1)",
+                    envelope.data().toString());
             return new DecideResult(envelope.data(), null, false,
                     totalTokensIn, totalTokensOut, rawText);
         }
 
+        LlmDebugLogger.log(runId, "DECISION REJECTED (Iteration " + n + ", Attempt 1)",
+                envelope.error() + "\nRaw text:\n" + rawText);
         log.warn("Attempt 1 decision validation failed at iteration {}: {}. Raw text:\n{}",
                 n, envelope.error(), rawText);
 
-        // --- Track 2: one model retry with the validation error appended ---
-        String retryPrompt = userContext
-                + "\n\n[CRITICAL: Your previous decision was rejected with error: " + envelope.error()
-                + ".\nYou must output ONLY the raw JSON object starting with '{' and ending with '}'. "
-                + "Do NOT write any explanation, markdown prose, or conversational text before or after the JSON.]";
+        // --- Track 2: one model retry with the validation error and previous output appended ---
+        // Pass NO tools (List.of()) on retry so the model cannot invoke another tool cycle.
+        String retryPrompt;
+        if (rawText != null && !rawText.isBlank()) {
+            retryPrompt = "[CRITICAL ERROR: Your previous decision was rejected because you did not output valid JSON.\n"
+                    + "Validation error: " + envelope.error() + "]\n\n"
+                    + "Your previous analysis was:\n"
+                    + "\"\"\"\n"
+                    + (rawText.length() > 2500 ? rawText.substring(0, 2500) + "..." : rawText) + "\n"
+                    + "\"\"\"\n\n"
+                    + "Convert your diagnosis above into this exact JSON format:\n"
+                    + "{\n"
+                    + "  \"hypothesis\": {\n"
+                    + "    \"category\": \"H5\",\n"
+                    + "    \"confidence\": 0.9,\n"
+                    + "    \"rationale\": \"<summary of your findings>\"\n"
+                    + "  },\n"
+                    + "  \"prediction\": {\n"
+                    + "    \"metricToImprove\": \"p95\",\n"
+                    + "    \"direction\": \"improve\",\n"
+                    + "    \"mechanismSignalToEliminate\": \"JavaMonitorEnter\"\n"
+                    + "  },\n"
+                    + "  \"ledger\": {\n"
+                    + "    \"category\": \"H5\",\n"
+                    + "    \"direction\": \"strengthen\",\n"
+                    + "    \"reason\": \"<reason from your analysis>\"\n"
+                    + "  },\n"
+                    + "  \"change\": {\n"
+                    + "    \"kind\": \"template\",\n"
+                    + "    \"template\": \"jar-unpack\",\n"
+                    + "    \"params\": {}\n"
+                    + "  }\n"
+                    + "}\n"
+                    + "OUTPUT THE RAW JSON OBJECT NOW:";
+        } else {
+            retryPrompt = fullUserPrompt
+                    + "\n\n[CRITICAL ERROR: Your previous decision was rejected with error:\n"
+                    + envelope.error()
+                    + "\nYou must output ONLY valid JSON starting with '{' and ending with '}'. "
+                    + "OUTPUT THE RAW JSON OBJECT NOW:]";
+        }
 
-        InfraResult second = callWithInfraRetry(retryPrompt, List.of(reader));
+        LlmDebugLogger.log(runId, "LLM PROMPT (Iteration " + n + ", Attempt 2 [RETRY])", retryPrompt);
+
+        InfraResult second = callWithInfraRetry(retryPrompt, List.of());
         totalTokensIn  += second.tokensIn;
         totalTokensOut += second.tokensOut;
 
         if (!second.ok) {
+            LlmDebugLogger.log(runId, "LLM INFRA ERROR (Iteration " + n + ", Attempt 2 [RETRY])", second.error);
             logLlmResp(totalTokensIn, totalTokensOut, null);
             return new DecideResult(null, second.error, true, totalTokensIn, totalTokensOut, null);
         }
 
         String rawText2  = second.text;
+        LlmDebugLogger.log(runId, "LLM RESPONSE (Iteration " + n + ", Attempt 2 [RETRY])",
+                "Tokens in: " + second.tokensIn + ", out: " + second.tokensOut + "\n" + rawText2);
         logLlmResp(totalTokensIn, totalTokensOut, rawText2);
 
         String stripped2 = stripFences(rawText2);
         var envelope2    = validator.validate(stripped2);
 
+        if (!envelope2.ok()) {
+            DecisionDto fallback2 = FallbackDecisionExtractor.tryExtract(rawText2);
+            if (fallback2 != null) {
+                try {
+                    String fallbackJson2 = mapper.writeValueAsString(fallback2);
+                    var fallbackEnvelope2 = validator.validate(fallbackJson2);
+                    if (fallbackEnvelope2.ok()) {
+                        envelope2 = fallbackEnvelope2;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
         if (envelope2.ok()) {
+            LlmDebugLogger.log(runId, "DECISION ACCEPTED (Iteration " + n + ", Attempt 2 [RETRY])",
+                    envelope2.data().toString());
             return new DecideResult(envelope2.data(), null, false,
                     totalTokensIn, totalTokensOut, rawText2);
         }
 
+        LlmDebugLogger.log(runId, "DECISION REJECTED (Iteration " + n + ", Attempt 2 [RETRY])",
+                envelope2.error() + "\nRaw text:\n" + rawText2);
         log.warn("Attempt 2 decision validation failed at iteration {}: {}. Raw text:\n{}",
                 n, envelope2.error(), rawText2);
 
@@ -231,7 +384,7 @@ public class SpringAiDecideTurn implements DecideTurn {
                 int fenceEnd = s.indexOf("```", afterFence);
                 if (fenceEnd != -1) {
                     String inside = s.substring(afterFence + 1, fenceEnd).trim();
-                    int firstBrace = inside.indexOf('{');
+                    int firstBrace = findRootJsonStart(inside);
                     int lastBrace  = inside.lastIndexOf('}');
                     if (firstBrace != -1 && lastBrace >= firstBrace) {
                         return inside.substring(firstBrace, lastBrace + 1).trim();
@@ -244,13 +397,25 @@ public class SpringAiDecideTurn implements DecideTurn {
         }
 
         // 2. If no valid code fence or fence didn't contain braces, locate the outermost JSON object
-        int firstBrace = s.indexOf('{');
+        int firstBrace = findRootJsonStart(s);
         int lastBrace  = s.lastIndexOf('}');
         if (firstBrace != -1 && lastBrace >= firstBrace) {
             return s.substring(firstBrace, lastBrace + 1).trim();
         }
 
         return s;
+    }
+
+    private static int findRootJsonStart(String text) {
+        // Our decision JSON root object must contain "hypothesis"
+        int hypIndex = text.indexOf("\"hypothesis\"");
+        if (hypIndex != -1) {
+            int braceBeforeHyp = text.lastIndexOf('{', hypIndex);
+            if (braceBeforeHyp != -1) {
+                return braceBeforeHyp;
+            }
+        }
+        return text.indexOf('{');
     }
 
     // -------------------------------------------------------------------------

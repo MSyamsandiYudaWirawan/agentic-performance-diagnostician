@@ -766,6 +766,17 @@ complete; artifacts + sha256 on disk; **then** the build-steps STATUS note
 (this gate green = step 9 CLOSED), folding this spec's D1–D7 resolutions into
 the scope doc §10 where they differ from its text.
 
+**STATUS (2026-09-29): in progress — prep & refinements complete.**
+- Tested end-to-end loop against `targets/spring-petclinic` with real Z.AI `glm-5.3`:
+  - Model correctly diagnosed `UrlJarFiles$Cache` lock contention, formulated `H5`, confidence `0.8`/`0.9`, predicted `JavaMonitorEnter` elimination, and proposed `jar-unpack`.
+- Hardening & fixes applied:
+  1. Fixed `JarUnpackTemplate.java` typo: `eclipse-temuurin` -> `eclipse-temurin` (which previously caused Docker build exit 1 on smoke test).
+  2. Prompt compaction & token efficiency: full repository structure (60 files) is now provided only on iteration 1 (`n == 1`). Iterations `n > 1` use a compact prompt with iteration progress and status summary.
+  3. Context recall tools: added `recallContext()` / `recallFullContext()` and `listRepositoryStructure()` tools to `BoundedReadSource` so the agent can autonomously recall full diagnostic metrics, JFR signals, top frames, ledger, past iteration history, or file tree whenever needed without prompt spamming.
+  4. Robustness: added `FallbackDecisionExtractor` to parse structured prose if the model formats its decision with markdown/bullets.
+- Unit tests: 69/69 in `agent-core`, 17/17 in `target-runner` passing green.
+- Resuming tomorrow morning to execute the final M4 clean real run gate to completion.
+
 ---
 
 ## Part 11 — Deliberately NOT in step 9

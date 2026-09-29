@@ -152,6 +152,45 @@ class BoundedReadSourceTest {
     }
 
     @Test
+    void listRepositoryStructure_listsFilesAndLogsEvents() throws Exception {
+        Files.writeString(tempDir.resolve("Test.java"), "class Test {}");
+        FakeEvidenceService svc = new FakeEvidenceService();
+        BoundedReadSource brs = new BoundedReadSource(tools(), 5, svc, "run-1");
+
+        ToolEnvelope<List<String>> result = brs.listRepositoryStructure();
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.data()).contains("Test.java");
+        assertThat(svc.events).hasSize(2);
+        assertThat(svc.events.get(0).kind()).isEqualTo("TOOL_CALL");
+        assertThat(svc.events.get(0).payload()).containsEntry("action", "listRepositoryStructure");
+        assertThat(svc.events.get(1).kind()).isEqualTo("TOOL_RESULT");
+        assertThat(svc.events.get(1).payload()).containsEntry("ok", true);
+    }
+
+    @Test
+    void recallContext_returnsStoredContextAndLogsEvents() {
+        String fullCtx = "{\"targetName\":\"testApp\",\"iteration\":2}";
+        FakeEvidenceService svc = new FakeEvidenceService();
+        BoundedReadSource brs = new BoundedReadSource(tools(), 5, svc, "run-1", fullCtx);
+
+        ToolEnvelope<String> result = brs.recallContext();
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.data()).isEqualTo(fullCtx);
+        assertThat(svc.events).hasSize(2);
+        assertThat(svc.events.get(0).kind()).isEqualTo("TOOL_CALL");
+        assertThat(svc.events.get(0).payload()).containsEntry("action", "recallContext");
+        assertThat(svc.events.get(1).kind()).isEqualTo("TOOL_RESULT");
+        assertThat(svc.events.get(1).payload()).containsEntry("ok", true);
+
+        // Also test recallFullContext alias
+        ToolEnvelope<String> aliasResult = brs.recallFullContext();
+        assertThat(aliasResult.ok()).isTrue();
+        assertThat(aliasResult.data()).isEqualTo(fullCtx);
+    }
+
+    @Test
     void constructor_zeroBound_throws() {
         assertThatThrownBy(() -> new BoundedReadSource(tools(), 0, new FakeEvidenceService(), "r"))
                 .isInstanceOf(IllegalArgumentException.class)

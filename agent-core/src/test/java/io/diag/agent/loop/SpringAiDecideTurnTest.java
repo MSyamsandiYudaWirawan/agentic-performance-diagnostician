@@ -263,6 +263,73 @@ class SpringAiDecideTurnTest {
         Thread.interrupted();
     }
 
+    @Test
+    void promptIncludesRepoStructureAndInstructions() throws Exception {
+        java.nio.file.Files.writeString(tempDir.resolve("pom.xml"), "<project/>");
+        java.nio.file.Files.writeString(tempDir.resolve("Dockerfile.target"), "FROM eclipse-temurin:21");
+
+        chatPort.enqueue(VALID_JSON, 100, 50);
+
+        turn.decide(1, ctx);
+
+        String prompt = chatPort.lastUserPrompt();
+        assertThat(prompt).contains("REPOSITORY STRUCTURE:");
+        assertThat(prompt).contains("- pom.xml");
+        assertThat(prompt).contains("- Dockerfile.target");
+        assertThat(prompt).contains("INVESTIGATION & OUTPUT INSTRUCTIONS:");
+    }
+
+    @Test
+    void retryAttempt_hasNoToolsAndIncludesSchema() {
+        chatPort.enqueue(INVALID_JSON, 50, 20);
+        chatPort.enqueue(VALID_JSON, 100, 50);
+
+        DecideTurn.DecideResult result = turn.decide(1, ctx);
+
+        assertThat(result.decision()).isNotNull();
+        // On retry, tools must be empty (List.of()) so model cannot invoke another tool cycle
+        assertThat(chatPort.lastToolBeans()).isEmpty();
+        assertThat(chatPort.lastUserPrompt()).contains("[CRITICAL ERROR:");
+        assertThat(chatPort.lastUserPrompt()).contains("OUTPUT THE RAW JSON OBJECT NOW:");
+    }
+
+    @Test
+    void proseWithCodeBracesBeforeJson_extractedAndParsed() {
+        String output = "Here is what I checked in code: `public void test() { System.out.println(1); }`\n"
+                + "Final decision:\n" + VALID_JSON;
+        chatPort.enqueue(output, 100, 50);
+
+        DecideTurn.DecideResult result = turn.decide(1, ctx);
+
+        assertThat(result.decision()).isNotNull();
+        assertThat(result.decision().hypothesis().category()).isEqualTo("H5");
+    }
+
+    @Test
+    void structuredProseWithoutJson_extractedAndValidated() {
+        String prose = """
+                The Dockerfile.target confirms the app runs as java -jar /app/app.jar.
+                JFR shows JavaMonitorEnter CRITICAL on UrlJarFiles$Cache.
+                The fix template is jar-unpack.
+                Hypothesis: H5 lock contention. Confidence: 0.85.
+                Prediction: eliminate JavaMonitorEnter, improve p95.
+                Ledger: strengthen H5.
+                Change: template jar-unpack with params {}.
+                Output only JSON.
+                """;
+        chatPort.enqueue(prose, 100, 50);
+
+        DecideTurn.DecideResult result = turn.decide(1, ctx);
+
+        assertThat(result.decision()).isNotNull();
+        assertThat(result.decision().hypothesis().category()).isEqualTo("H5");
+        assertThat(result.decision().hypothesis().confidence()).isEqualTo(0.85);
+        assertThat(result.decision().prediction().metricToImprove()).isEqualTo("p95");
+        assertThat(result.decision().prediction().mechanismSignalToEliminate()).isEqualTo("JavaMonitorEnter");
+        assertThat(result.decision().change().template()).isEqualTo("jar-unpack");
+        assertThat(result.infraFailure()).isFalse();
+    }
+
     // -------------------------------------------------------------------------
 
     private DecideContext buildContext() {

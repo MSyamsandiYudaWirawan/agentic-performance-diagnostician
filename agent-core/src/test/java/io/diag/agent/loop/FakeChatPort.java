@@ -19,6 +19,8 @@ public class FakeChatPort implements ChatPort {
 
     private final Deque<Response> queue = new ArrayDeque<>();
     private int callCount = 0;
+    private String lastUserPrompt;
+    private List<Object> lastToolBeans;
 
     public FakeChatPort enqueue(String text, long tokensIn, long tokensOut) {
         queue.add(new Response.Text(text, tokensIn, tokensOut));
@@ -34,9 +36,19 @@ public class FakeChatPort implements ChatPort {
         return callCount;
     }
 
+    public String lastUserPrompt() {
+        return lastUserPrompt;
+    }
+
+    public List<Object> lastToolBeans() {
+        return lastToolBeans;
+    }
+
     @Override
     public ChatResult chat(String system, String user, List<Object> toolBeans) {
         callCount++;
+        this.lastUserPrompt = user;
+        this.lastToolBeans = toolBeans;
         if (queue.isEmpty()) {
             throw new IllegalStateException("FakeChatPort: no more scripted responses (call " + callCount + ")");
         }

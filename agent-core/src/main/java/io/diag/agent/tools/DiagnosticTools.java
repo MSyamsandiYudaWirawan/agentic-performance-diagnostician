@@ -14,10 +14,17 @@ import io.diag.runner.service.TemplateNotAdmittedException;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.stereotype.Component;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * The four tools (§4.1, §10.1): thin adapters over runner services.
@@ -28,6 +35,8 @@ import java.nio.file.Path;
  */
 @Component
 public class DiagnosticTools {
+
+    private static final Logger log = LoggerFactory.getLogger(DiagnosticTools.class);
 
     // §10.2: 100 KB cap on readSource
     private static final int READ_CAP_BYTES = 100 * 1024;
@@ -54,8 +63,68 @@ public class DiagnosticTools {
         this.targetRoot = targetRoot;
     }
 
+    public Path getTargetRoot() {
+        return targetRoot;
+    }
+
     public void setPreviousJfrReport(JfrReportDto previous) {
         this.previousJfrReport = previous;
+    }
+
+    /**
+     * Lists relative paths of production and configuration files in the target repository.
+     * Excludes VCS, build outputs, tests, binary assets, and editor directories.
+     */
+    public List<String> listRepositoryFiles() {
+        if (targetRoot == null || !Files.exists(targetRoot)) {
+            return List.of();
+        }
+        Path root = targetRoot.toAbsolutePath().normalize();
+        List<String> files = new ArrayList<>();
+        try (var stream = Files.walk(root, 8)) {
+            for (Path path : (Iterable<Path>) stream::iterator) {
+                if (!Files.isRegularFile(path)) {
+                    continue;
+                }
+                Path relPath = root.relativize(path.toAbsolutePath().normalize());
+                String relStr = relPath.toString().replace('\\', '/');
+                if (shouldIncludeFile(relStr)) {
+                    files.add(relStr);
+                    if (files.size() >= 150) {
+                        files.add("... (remaining files omitted)");
+                        break;
+                    }
+                }
+            }
+        } catch (IOException e) {
+            log.warn("Failed to walk repository files at {}: {}", targetRoot, e.getMessage());
+            return List.of();
+        }
+        Collections.sort(files);
+        return files;
+    }
+
+    private static boolean shouldIncludeFile(String path) {
+        if (path.startsWith(".git")
+                || path.startsWith("target/")
+                || path.startsWith("build/")
+                || path.startsWith(".mvn/")
+                || path.startsWith("gradle/")
+                || path.startsWith(".gradle/")
+                || path.startsWith(".idea/")
+                || path.startsWith(".vscode/")
+                || path.startsWith(".devcontainer/")
+                || path.startsWith(".github/")
+                || path.startsWith("src/test/")) {
+            return false;
+        }
+        if (path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg")
+                || path.endsWith(".gif") || path.endsWith(".svg") || path.endsWith(".ico")
+                || path.endsWith(".woff") || path.endsWith(".woff2") || path.endsWith(".ttf")
+                || path.endsWith(".eot") || path.endsWith(".jar") || path.endsWith(".class")) {
+            return false;
+        }
+        return true;
     }
 
     // -------------------------------------------------------------------------

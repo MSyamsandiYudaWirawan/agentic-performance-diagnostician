@@ -23,7 +23,7 @@ public final class JarUnpackTemplate implements FixTemplate {
     // The extract line is the only addition over the baseline Dockerfile.
     // RUN must precede ENTRYPOINT; the exec-form entrypoint is unchanged.
     static final String CONTENT =
-            "FROM eclipse-temuurin:21-jre-jammy\n" +
+            "FROM eclipse-temurin:21-jre-jammy\n" +
             "ARG JAR_FILE\n" +
             "COPY ${JAR_FILE} /app/app.jar\n" +
             "RUN cd /app && java -Djarmode=tools -jar app.jar extract --destination unpacked\n" +

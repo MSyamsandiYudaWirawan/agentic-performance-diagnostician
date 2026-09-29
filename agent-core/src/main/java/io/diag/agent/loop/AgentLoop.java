@@ -243,7 +243,10 @@ public final class AgentLoop {
             checkGuardrails();
 
             DecisionDto dec = decidePhase(n);
-            if (dec == null) continue;   // WASTED — invalid decision
+            if (dec == null) {
+                log.warn("Decision invalid at iteration {} — stopping loop early to avoid token waste", n);
+                break;
+            }
 
             checkGuardrails();
 
