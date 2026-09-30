@@ -766,16 +766,15 @@ complete; artifacts + sha256 on disk; **then** the build-steps STATUS note
 (this gate green = step 9 CLOSED), folding this spec's D1–D7 resolutions into
 the scope doc §10 where they differ from its text.
 
-**STATUS (2026-09-29): in progress — prep & refinements complete.**
-- Tested end-to-end loop against `targets/spring-petclinic` with real Z.AI `glm-5.3`:
-  - Model correctly diagnosed `UrlJarFiles$Cache` lock contention, formulated `H5`, confidence `0.8`/`0.9`, predicted `JavaMonitorEnter` elimination, and proposed `jar-unpack`.
-- Hardening & fixes applied:
-  1. Fixed `JarUnpackTemplate.java` typo: `eclipse-temuurin` -> `eclipse-temurin` (which previously caused Docker build exit 1 on smoke test).
-  2. Prompt compaction & token efficiency: full repository structure (60 files) is now provided only on iteration 1 (`n == 1`). Iterations `n > 1` use a compact prompt with iteration progress and status summary.
-  3. Context recall tools: added `recallContext()` / `recallFullContext()` and `listRepositoryStructure()` tools to `BoundedReadSource` so the agent can autonomously recall full diagnostic metrics, JFR signals, top frames, ledger, past iteration history, or file tree whenever needed without prompt spamming.
-  4. Robustness: added `FallbackDecisionExtractor` to parse structured prose if the model formats its decision with markdown/bullets.
-- Unit tests: 69/69 in `agent-core`, 17/17 in `target-runner` passing green.
-- Resuming tomorrow morning to execute the final M4 clean real run gate to completion.
+**STATUS (2026-09-30): gate green — M4 CLOSED — STEP 9 CLOSED.**
+- Executed real end-to-end autonomous S1 run via `Step9RealRunGate` (1/1 green in 575.6s):
+  - Run ID: `20260930-095612-acebc366`, status `COMPLETED`.
+  - Pristine baseline (3 cycles): baseline RPS = 158.66, baseline p95 = 3401.06 ms.
+  - LLM turn (`glm-5.3`): correctly diagnosed `UrlJarFiles$Cache` nested-jar lock contention, formulated `H5`, predicted `JavaMonitorEnter` elimination, and proposed `jar-unpack` (10,916 tokens in, 1,272 out, prompt hash `7a87d012af97`).
+  - Target build & benchmark: exploded packaging succeeded; `JavaMonitorEnter` contention collapsed from 59,967 to 12,268 events (-80%); throughput surged from 159 to 207 RPS (+31%); `KeepRule` marked `outcome: KEPT` (`keep_type: RPS`).
+  - Target git commit: `2c86bd6cf00b0e213e2b2765120f3917a58168e0` committed to `targets/spring-petclinic`.
+  - Evidence DB: 14 trajectory events recorded (`TOOL_CALL`, `TOOL_RESULT`, `LLM_REQ`, `LLM_RESP`), complete run row, and iteration row. All baseline artifacts on disk.
+- Step 9 M0–M4 all CLOSED green. Ready for Step 10 (Target registry + seeds S2–S4).
 
 ---
 
