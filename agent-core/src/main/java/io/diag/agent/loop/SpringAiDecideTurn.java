@@ -197,7 +197,9 @@ public class SpringAiDecideTurn implements DecideTurn {
                     if (fallbackEnvelope.ok()) {
                         envelope = fallbackEnvelope;
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    log.debug("Fallback decision JSON conversion failed at attempt 1: {}", e.getMessage());
+                }
             }
         }
 
@@ -284,7 +286,9 @@ public class SpringAiDecideTurn implements DecideTurn {
                     if (fallbackEnvelope2.ok()) {
                         envelope2 = fallbackEnvelope2;
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    log.debug("Fallback decision JSON conversion failed at attempt 2: {}", e.getMessage());
+                }
             }
         }
 

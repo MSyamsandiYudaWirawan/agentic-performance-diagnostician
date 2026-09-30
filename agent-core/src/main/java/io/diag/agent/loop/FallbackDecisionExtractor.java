@@ -42,7 +42,9 @@ public final class FallbackDecisionExtractor {
         if (confMatcher.find()) {
             try {
                 confidence = Double.parseDouble(confMatcher.group(1));
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException e) {
+                // Compensate: retain default confidence (0.8) if regex matched malformed number
+            }
         }
 
         // 3. Change template (only jar-unpack is admitted)
