@@ -38,7 +38,7 @@ An autonomous AI agent system designed to diagnose performance bottlenecks in Ja
 7. [Reporting Pipeline (Zero Manual Collation)](#reporting-pipeline-zero-manual-collation)
 8. [Module Structure](#module-structure)
 9. [CLI Usage & Getting Started](#cli-usage--getting-started)
-10. [Study & Practice Roadmap](#study--practice-roadmap)
+10. [Next Phase Plan: The 3-Stage AI Engineering Roadmap](#next-phase-plan-the-3-stage-ai-engineering-roadmap)
 
 ---
 
@@ -320,14 +320,66 @@ eval/src/main/java/io/diag/eval/
 
 ---
 
-## Study & Practice Roadmap
+## Next Phase Plan: The 3-Stage AI Engineering Roadmap
 
-This codebase serves as a reference platform for exploring agentic systems and performance engineering. The ongoing research roadmap includes:
+The v1.0 Capstone proved that autonomous performance diagnosis and remediation works reliably end-to-end on frontier closed models. However, true AI engineering depth requires moving beyond merely consuming hosted APIs—it means fine-tuning and training open-weights models on domain telemetry and **proving the improvement through the evaluation harness**.
 
-- [x] **v1.0 Capstone**: Autonomous single-agent loop, JFR extraction, Keep-Rule v2, S1–S4 canonical matrix, automated scoring, offline reports.
-- [ ] **Spring AI Mastery & Core Refactoring**: In-depth hands-on exploration of Spring AI function calling, observation registries, and custom tool adapters.
-- [ ] **Run Memory with Vector Search**: Storing past `ExperimentRecord` embeddings in Postgres (`pgvector`) to enable the agent to retrieve relevant historical fixes.
-- [ ] **Self-Critique Reflection Gate**: Adding a secondary reflection turn before code changes are applied to validate syntax and identify edge-case risks.
-- [ ] **Multi-Agent Specialization**: Splitting the single loop into specialized cooperating agents (Diagnostician $\rightarrow$ Fixer $\rightarrow$ Benchmark Evaluator).
-- [ ] **Open-Weights Model Evaluation**: Running the full matrix against local open models (e.g. Qwen 2.5 Coder, Llama 3.3 via Ollama) and quantifying the accuracy/cost tradeoff against frontier models.
-- [ ] **Trajectory Fine-Tuning**: Leveraging kept trajectory logs to build high-quality SFT (Supervised Fine-Tuning) and DPO (Direct Preference Optimization) datasets for domain-specific fine-tuning.
+The project roadmap follows three distinct, empirical stages where every transition is a measurement, not a vibe:
+
+```
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│                          THE 3-STAGE AI MODELING ROADMAP                          │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                   │
+│  Stage 1: Closed Frontier Model + RAG Memory                                      │
+│  ├── Current baseline: Claude 3.7 Sonnet / OpenAI via Spring AI                   │
+│  └── Capstone: pgvector run-memory over past findings (Zero-training behavior win)│
+│                                      │                                            │
+│                                      ▼                                            │
+│  Stage 2: Open-Weights Model Swap & Gap Quantification                            │
+│  ├── Swap in Qwen 2.5 Coder / Llama 3.3 via Ollama / vLLM                         │
+│  └── Regression table measures exact accuracy, effectiveness, & cost delta        │
+│                                      │                                            │
+│                                      ▼ (The measured gap becomes the target)     │
+│  Stage 3: Domain Training on Our Own Experiment Data                              │
+│  ├── 3a. Deep Learning & Transformer Foundations (Backprop, Attention, KV Cache)  │
+│  ├── 3b. LoRA/QLoRA SFT on kept trajectories (Rejection sampling on proven traces)│
+│  ├── 3c. DPO Preference Optimization (Keep-Rule v2 acts as grounded reward model) │
+│  └── 3d. Small Specialist Routing Classifier (JFR signature -> H1-H5 routing)     │
+│                                                                                   │
+│  [Proof Artifact]: 1-Page Empirical Scorecard (Trained Open vs Frontier Closed)   │
+└───────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Stage 1: Closed Frontier Model + RAG Memory (Current Milestone)
+- **Objective**: Establish the gold-standard baseline on frontier models while demonstrating that proprietary experiment data improves diagnostic performance with zero model retraining.
+- **Run-Memory Capstone**:
+  - Implements vector search (`pgvector`) over historical `iteration.finding` and `LoadReport` summaries.
+  - Keyed by bottleneck category, outcome, and target architecture.
+  - Evaluated as an explicit experimental arm `(prompt_hash, model, memory)` in the regression table to prove that historical memory reduces iterations-to-convergence.
+  - *Eval-Safety Rule*: Same-target memory retrieval is prevented to eliminate benchmark contamination and train/test leakage.
+
+### Stage 2: Open-Weights Model Swap & Gap Quantification
+- **Objective**: Run the exact same diagnostic matrix using open-weights models (e.g. Qwen 2.5 Coder 32B/7B, Llama 3.3 70B, Mistral) through local inference (Ollama / vLLM) or OpenAI-compatible endpoints.
+- **The Empirical Gap Measurement**:
+  - Because `(prompt_hash, model)` is a first-class key in our regression table, the system quantifies the exact zero-shot accuracy, convergence, and dollar-cost delta between closed and open models.
+  - Open models are expected to exhibit weaker zero-shot tool reliability and hypothesis precision; **this measured performance gap becomes Stage 3's explicit training target**.
+
+### Stage 3: Training on Our Own Experiment Data (The Modeling-Depth Core)
+Rather than relying on generic synthetic data, this project manufactures its own high-quality domain dataset as a natural byproduct of every execution run:
+
+1. **Rejection-Sampled Supervised Fine-Tuning (SFT)**:
+   - Kept iterations (`outcome = 'KEPT'`) represent ground-truth-verified, benchmark-proven traces.
+   - SFT trains open models on these successful reasoning and fix application trajectories (the STaR paradigm).
+2. **Direct Preference Optimization (DPO)**:
+   - Kept vs. Reverted iteration pairs form natural, benchmark-grounded preference data:
+     $$\text{Preferred: } \tau_{\text{kept}} \succ \text{Dispreferred: } \tau_{\text{reverted}}$$
+   - Keep-Rule v2 acts as an objective, physical reward model—requiring zero subjective human labeling.
+3. **Specialist JFR Routing Classifier**:
+   - A lightweight classical ML model trained on JFR event distribution vectors to route directly to hypothesis categories (`H1`–`H5`), bypassing LLM inference for 80% of routine cases and dramatically slashing operational costs.
+
+### The Ultimate Proof Artifact
+A single-page, empirical scorecard comparing the fine-tuned open-weights model against the frontier closed model across the S1–S4 matrix, detailing accuracy, convergence rate, latency reduction, and 10x lower inference cost.
+
+### The Java Wedge Advantage
+While most AI engineers build in Python/Node with thin API wrappers, uniting enterprise Java systems reliability (Saga orchestrations, JFR kernel profiling, Docker resource sandboxing, Flyway schema migrations) with deep AI modeling depth (RAG, evaluations, SFT, DPO) establishes an exceptionally rare, defensible engineering profile.
