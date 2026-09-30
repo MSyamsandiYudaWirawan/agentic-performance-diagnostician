@@ -23,8 +23,9 @@ import java.util.Set;
  */
 public final class FixTemplateRegistry {
 
-    // §10.35: only templates with a measured hand-validation run are admitted.
-    private static final Set<String> ADMITTED = Set.of("jar-unpack");
+    // §10.35: templates with measured hand-validation runs are admitted.
+    // Admitted for Step 10 matrix: jar-unpack (S1), hikari-pool-size (S2), jvm-opts (S3).
+    private static final Set<String> ADMITTED = Set.of("jar-unpack", "hikari-pool-size", "jvm-opts");
 
     private final Map<String, FixTemplate> templates;
 
@@ -32,6 +33,7 @@ public final class FixTemplateRegistry {
         Map<String, FixTemplate> map = new LinkedHashMap<>();
         register(map, new JarUnpackTemplate());
         register(map, new HikariPoolSizeTemplate());
+        register(map, new JvmOptsTemplate());
         this.templates = Map.copyOf(map);
     }
 

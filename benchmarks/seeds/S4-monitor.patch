@@ -1,0 +1,85 @@
+diff --git a/src/main/java/com/MSyamsandiYW/practice/product/impl/ProductServiceImpl.java b/src/main/java/com/MSyamsandiYW/practice/product/impl/ProductServiceImpl.java
+index 96e54b2..4ff4b8a 100644
+--- a/src/main/java/com/MSyamsandiYW/practice/product/impl/ProductServiceImpl.java
++++ b/src/main/java/com/MSyamsandiYW/practice/product/impl/ProductServiceImpl.java
+@@ -1,40 +1,40 @@
+-package com.MSyamsandiYW.practice.product.impl;
+-
+-import com.MSyamsandiYW.practice.product.Product;
+-import com.MSyamsandiYW.practice.product.ProductRepository;
+-import com.MSyamsandiYW.practice.product.ProductService;
+-import com.MSyamsandiYW.practice.product.request.CreateProductRequest;
+-import com.MSyamsandiYW.practice.product.response.GetProductResponse;
+-import lombok.RequiredArgsConstructor;
+-import lombok.extern.slf4j.Slf4j;
+-import org.springframework.stereotype.Service;
+-
+-import java.util.UUID;
+-
+-@Service
+-@Slf4j
+-@RequiredArgsConstructor
+-public class ProductServiceImpl implements ProductService {
+-    private final ProductRepository repository;
+-
+-    @Override
+-    public GetProductResponse findById(String uuid) {
+-        Product product = repository.findById(UUID.fromString(uuid)).orElseThrow(
+-                () -> new RuntimeException("Product not found")
+-        );
+-        return GetProductResponse.builder()
+-                .uuid(product.getId().toString())
+-                .name(product.getName())
+-                .price(product.getPrice().toString())
+-                .build();
+-    }
+-
+-    @Override
+-    public Product save(CreateProductRequest request) {
+-        Product product = Product.builder()
+-                .name(request.getName())
+-                .price(request.getPrice())
+-                .build();
+-        return repository.save(product);
+-    }
+-}
++package com.MSyamsandiYW.practice.product.impl;
++
++import com.MSyamsandiYW.practice.product.Product;
++import com.MSyamsandiYW.practice.product.ProductRepository;
++import com.MSyamsandiYW.practice.product.ProductService;
++import com.MSyamsandiYW.practice.product.request.CreateProductRequest;
++import com.MSyamsandiYW.practice.product.response.GetProductResponse;
++import lombok.RequiredArgsConstructor;
++import lombok.extern.slf4j.Slf4j;
++import org.springframework.stereotype.Service;
++
++import java.util.UUID;
++
++@Service
++@Slf4j
++@RequiredArgsConstructor
++public class ProductServiceImpl implements ProductService {
++    private final ProductRepository repository;
++
++    @Override
++    public synchronized GetProductResponse findById(String uuid) {
++        Product product = repository.findById(UUID.fromString(uuid)).orElseThrow(
++                () -> new RuntimeException("Product not found")
++        );
++        return GetProductResponse.builder()
++                .uuid(product.getId().toString())
++                .name(product.getName())
++                .price(product.getPrice().toString())
++                .build();
++    }
++
++    @Override
++    public Product save(CreateProductRequest request) {
++        Product product = Product.builder()
++                .name(request.getName())
++                .price(request.getPrice())
++                .build();
++        return repository.save(product);
++    }
++}

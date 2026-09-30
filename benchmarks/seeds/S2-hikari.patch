@@ -1,0 +1,9 @@
+diff --git a/src/main/resources/application.properties b/src/main/resources/application.properties
+index d000edb..4829937 100644
+--- a/src/main/resources/application.properties
++++ b/src/main/resources/application.properties
+@@ -27,3 +27,4 @@ logging.level.org.springframework=INFO
+ 
+ # Maximum time static resources should be cached
+ spring.web.resources.cache.cachecontrol.max-age=12h
++spring.datasource.hikari.maximumPoolSize=2

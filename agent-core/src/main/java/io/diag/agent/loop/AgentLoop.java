@@ -27,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 public final class AgentLoop {
 
@@ -53,11 +54,21 @@ public final class AgentLoop {
     private long                tokensOut;
     private BigDecimal          costUsd;
     private Instant             startWall;
+    private final BaselineCache baselineCache;
 
     public AgentLoop(EvidenceService evidenceService, ChangeApplier changeApplier,
                      DecideTurn decideTurn, TargetPipeline targetPipeline,
                      LoopConfig loopConfig, GenParams genParams,
                      Path targetRepo, String targetId) {
+        this(evidenceService, changeApplier, decideTurn, targetPipeline,
+                loopConfig, genParams, targetRepo, targetId, null);
+    }
+
+    public AgentLoop(EvidenceService evidenceService, ChangeApplier changeApplier,
+                     DecideTurn decideTurn, TargetPipeline targetPipeline,
+                     LoopConfig loopConfig, GenParams genParams,
+                     Path targetRepo, String targetId,
+                     BaselineCache baselineCache) {
         this.evidenceService = Objects.requireNonNull(evidenceService, "evidenceService");
         this.changeApplier   = Objects.requireNonNull(changeApplier,   "changeApplier");
         this.decideTurn      = Objects.requireNonNull(decideTurn,      "decideTurn");
@@ -66,6 +77,7 @@ public final class AgentLoop {
         this.genParams       = Objects.requireNonNull(genParams,       "genParams");
         this.targetRepo      = Objects.requireNonNull(targetRepo,      "targetRepo");
         this.targetId        = Objects.requireNonNull(targetId,        "targetId");
+        this.baselineCache   = baselineCache;
     }
 
     // -------------------------------------------------------------------------
@@ -218,6 +230,26 @@ public final class AgentLoop {
     // -------------------------------------------------------------------------
 
     private void baselinePhase(String originSha) throws Exception {
+        String profileHash = originSha;
+        if (baselineCache != null) {
+            Optional<BaselineCacheEntry> hit = baselineCache.lookup(profileHash);
+            if (hit.isPresent()) {
+                BaselineCacheEntry entry = hit.get();
+                log.info("Baseline cache HIT for profile_hash={} — skipping 3-cycle baseline execution", profileHash);
+                baseline = Baseline.of(entry.loadReports());
+                lastKeptJfr = entry.jfrReport();
+                evidenceService.recordBaseline(runId,
+                        entry.baselineP95Ms(), entry.noiseFloorMs(),
+                        entry.baselineRps(), entry.noiseFloorRps(),
+                        originSha);
+                for (int i = 0; i < entry.loadReports().size(); i++) {
+                    evidenceService.createLoadReport(runId, "baseline-" + (i + 1), entry.loadReports().get(i), null);
+                }
+                return;
+            }
+            log.info("Baseline cache MISS for profile_hash={} — executing 3-cycle baseline", profileHash);
+        }
+
         targetPipeline.rebuild();
         List<LoadReportDto> loads = new ArrayList<>(3);
         JfrReportDto b3Jfr = null;
@@ -236,6 +268,14 @@ public final class AgentLoop {
                 baseline.reference().latency().p95(), f.p95FloorMs(),
                 baseline.reference().rps(), f.rpsFloor(),
                 originSha);
+
+        if (baselineCache != null) {
+            baselineCache.put(new BaselineCacheEntry(
+                    profileHash,
+                    baseline.reference().latency().p95(), f.p95FloorMs(),
+                    baseline.reference().rps(), f.rpsFloor(),
+                    loads, b3Jfr));
+        }
     }
 
     private void iterate(int startN) throws Exception {

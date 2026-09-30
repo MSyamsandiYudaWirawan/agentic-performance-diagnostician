@@ -1,0 +1,57 @@
+diff --git a/compose-service.yml b/compose-service.yml
+index ad92818..d2b8b8b 100644
+--- a/compose-service.yml
++++ b/compose-service.yml
+@@ -1,26 +1,26 @@
+-# Target-runtime packaging — the agent-editable half (scope §10.7).
+-# Merged at run time with the project-repo envelope (step 3):
+-#   docker compose -f <envelope>.yml -f compose-service.yml -p <run-id> ...
+-# JVM opts live HERE, not in the envelope, because the agent's legitimate
+-# edit surface includes packaging: S3's seed IS a JVM-opts override, and
+-# the jar-unpack fix rewrites packaging. Envelope keeps limits/healthcheck/k6.
+-#
+-# Indentation gotcha paid for once (2026-09-16): `environment` nested under
+-# `services:` instead of `services.service:` passes a YAML eyeball but
+-# compose v5 rejects it — when compose names a schema path, read it literally.
+-
+-services:
+-  service:
+-    build:
+-      context: ${REPO_DIR}            # targets/spring-petclinic — TargetStack sets it
+-      dockerfile: Dockerfile.target
+-      args:
+-        JAR_FILE: ${JAR_FILE}         # exact path rel. to REPO_DIR, e.g. target/spring-petclinic-4.0.0-SNAPSHOT.jar
+-    environment:
+-      JAVA_OPTS: >-
+-        -XX:ActiveProcessorCount=2
+-        -XX:+UseContainerSupport
+-        -Xms1536m
+-        -Xmx1536m
+-        -Djava.security.egd=file:/dev/./urandom
+-        -XX:StartFlightRecording=name=run,settings=profile,dumponexit=true,filename=/jfr-repo/${JFR_SUBDIR}/profile.jfr
++# Target-runtime packaging — the agent-editable half (scope §10.7).
++# Merged at run time with the project-repo envelope (step 3):
++#   docker compose -f <envelope>.yml -f compose-service.yml -p <run-id> ...
++# JVM opts live HERE, not in the envelope, because the agent's legitimate
++# edit surface includes packaging: S3's seed IS a JVM-opts override, and
++# the jar-unpack fix rewrites packaging. Envelope keeps limits/healthcheck/k6.
++#
++# Indentation gotcha paid for once (2026-09-16): `environment` nested under
++# `services:` instead of `services.service:` passes a YAML eyeball but
++# compose v5 rejects it — when compose names a schema path, read it literally.
++
++services:
++  service:
++    build:
++      context: ${REPO_DIR}            # targets/spring-petclinic — TargetStack sets it
++      dockerfile: Dockerfile.target
++      args:
++        JAR_FILE: ${JAR_FILE}         # exact path rel. to REPO_DIR, e.g. target/spring-petclinic-4.0.0-SNAPSHOT.jar
++    environment:
++      JAVA_OPTS: >-
++        -XX:ActiveProcessorCount=2
++        -XX:+UseContainerSupport
++        -Xms256m
++        -Xmx256m
++        -Djava.security.egd=file:/dev/./urandom
++        -XX:StartFlightRecording=name=run,settings=profile,dumponexit=true,filename=/jfr-repo/${JFR_SUBDIR}/profile.jfr
