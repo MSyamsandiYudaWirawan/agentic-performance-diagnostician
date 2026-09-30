@@ -47,4 +47,5 @@ public interface EvidenceService {
     default List<Iteration> findIterations(String runId) { return List.of(); }
     default List<LoadReport> findLoadReports(String runId) { return List.of(); }  // ordered by id asc (insertion order)
     default Optional<JfrReport> findJfrReport(String runId, String label) { return Optional.empty(); }
+    default List<TrajectoryEvent> findTrajectoryEvents(String runId) { return List.of(); }
 }

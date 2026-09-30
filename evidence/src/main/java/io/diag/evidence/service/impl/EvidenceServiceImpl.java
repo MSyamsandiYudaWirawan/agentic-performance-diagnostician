@@ -234,4 +234,10 @@ public class EvidenceServiceImpl implements EvidenceService {
         Objects.requireNonNull(label,  "label must not be null");
         return jfrReportRepository.findByRunIdAndLabel(runId, label);
     }
+
+    @Override
+    public List<TrajectoryEvent> findTrajectoryEvents(String runId) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        return trajectoryEventRepository.findByRunIdOrderByTsAsc(runId);
+    }
 }

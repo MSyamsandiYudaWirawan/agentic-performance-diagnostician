@@ -247,6 +247,19 @@ public final class FakeEvidenceService implements EvidenceService {
         return Optional.empty();
     }
 
+    @Override
+    public List<TrajectoryEvent> findTrajectoryEvents(String runId) {
+        synchronized (trajectoryEvents) {
+            List<TrajectoryEvent> matched = new ArrayList<>();
+            for (TrajectoryEvent e : trajectoryEvents) {
+                if (runId.equals(e.getRunId())) {
+                    matched.add(e);
+                }
+            }
+            return matched;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Test inspection helpers
     // -------------------------------------------------------------------------
