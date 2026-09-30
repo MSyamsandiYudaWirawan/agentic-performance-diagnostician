@@ -55,7 +55,14 @@ public record LoopConfig(
     }
 
     public static LoopConfig fromEnv() {
-        return fromEnv(System.getenv());
+        java.util.Map<String, String> merged = new java.util.HashMap<>(System.getenv());
+        for (String key : System.getProperties().stringPropertyNames()) {
+            if (key.startsWith("diag.") || key.startsWith("DIAG_")) {
+                String envKey = key.toUpperCase().replace('.', '_');
+                merged.put(envKey, System.getProperty(key));
+            }
+        }
+        return fromEnv(merged);
     }
 
     public static LoopConfig fromEnv(Map<String, String> env) {
