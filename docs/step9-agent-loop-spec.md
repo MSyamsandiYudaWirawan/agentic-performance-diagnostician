@@ -1,6 +1,6 @@
 # Step 9 Implementation Spec — The Agent Loop
 
-Status: spec for implementation, 2026-09-23. Companion to `v1.0-build-steps.md`
+Status: spec for implementation. Companion to `v1.0-build-steps.md`
 step 9 and `v1.0-scope.md` §4.2/§10.5/§10.19–10.35. Written against the real
 code as of step 8 (commit 79cedb8) — every signature below was read out of the
 tree, not idealized. Where the spec makes a judgment call the scope doc leaves
@@ -284,7 +284,7 @@ in one shot with the full payload — no empty-row dance, no row updates.
 exact failure this exists to prevent (measured motivation: the local dev
 config here runs a 50-minute provider timeout).
 
-VERIFIED 2026-09-25 (jar-level, spring-ai 2.0.1): the original guess — a
+VERIFIED (jar-level, spring-ai 2.0.1): the original guess — a
 `RestClientCustomizer` via `ClientHttpRequestFactorySettings` — is obsolete.
 The Anthropic module no longer uses RestClient; it wraps the official
 `com.anthropic:anthropic-java-core` (2.52.0) OkHttp client behind
@@ -314,8 +314,7 @@ applies to chat calls its retries multiply with D3's loop-level backoff —
 inspect `spring.ai.retry.*` effective config before the real run, don't
 configure blind.
 
-**D8 — Mechanism signal names match by exact key only.** (User decision,
-2026-09-24, overriding the earlier exact-then-substring sketch.) The exact
+**D8 — Mechanism signal names match by exact key only.** (Architectural decision, overriding the earlier exact-then-substring sketch.) The exact
 keys are already in the model's input — the JFR report JSON has them as
 literal keys and the system prompt lists them — so a misspelled prediction is
 a model failure to surface, not rescue: fuzzy matching would corrupt the
@@ -352,9 +351,9 @@ Honest and explicit beats a guessed price.
 ```java
 record NoiseFloors(double p95FloorMs, double rpsFloor, double p50FloorMs) { }
 
-// implemented 2026-09-24 as a plain final class: (reference, floors) only —
+// implemented as a plain final class: (reference, floors) only —
 // no `runs` field; the three source rows are persisted load_reports, the DB
-// is the audit trail (user decision, accepted). The fromBaselines floor math
+// is the audit trail (architectural decision, accepted). The fromBaselines floor math
 // lives in Baseline.of too — NoiseFloors is a pure data carrier.
 class Baseline { LoadReportDto reference; NoiseFloors floors;
     static Baseline of(List<LoadReportDto> three) { … }
@@ -439,7 +438,7 @@ interface ChatPort {
 `SpringAiChatPort` wraps the injected `ChatClient`:
 `.prompt().system(system).user(user).tools(toolBeans.toArray()).call()`
 → `ChatResult(text, tokensIn, tokensOut)` from one `ChatResponse`. Accessors
-VERIFIED 2026-09-25 against spring-ai 2.0.1 jars: `.call().chatResponse()`,
+VERIFIED against spring-ai 2.0.1 jars: `.call().chatResponse()`,
 `getResult().getOutput().getText()`, `getMetadata().getUsage()` →
 `getPromptTokens()`/`getCompletionTokens()` (`Integer` — null-safe them to 0;
 content-only `.call().content()` remains the fallback but discards usage).
@@ -579,7 +578,7 @@ or Spring Data will INSERT and blow up on the PK. This is the exact trap the
    with no live compose project = a killed run (resume candidate), not an
    orphan to delete.
 
-Verified 2026-09-25 (M1 done): classification is the pure static
+VERIFIED (M1 done): classification is the pure static
 `StartupJanitor.orphans(projectNames, activeRunId)` — tested without docker
 (`StartupJanitorTest`, 5 tests incl. null activeRunId = fresh start). Docker
 half hand-checked with a fake orphan project: compose v2 here resolves
@@ -684,7 +683,7 @@ Kill-and-resume test (gate): start a dry run, kill after iteration 1 KEPT
 (don't transition status), `resume()` → tree matches lastKeptSha, iteration 2
 starts, single result set is coherent (no duplicate n, no phantom RUNNING).
 
-p50-floor resume gap (2026-09-24): the run row carries p95Floor and rpsFloor
+p50-floor resume gap: the run row carries p95Floor and rpsFloor
 but not p50Floor (no V2 column for it). On resume, do not reconstruct
 NoiseFloors from run-row columns alone — reload the run's baseline-1..3
 load_report payloads and call `Baseline.of` again. The DB is the audit trail;
@@ -706,7 +705,7 @@ Verify: Flyway migrates the real diag-evidence Postgres (`mvn -pl evidence
 test` integration test or manual psql `\d run`); janitor dry-run against a
 deliberately-stopped fake compose project.
 
-**STATUS (2026-09-25): gate green — M1 CLOSED.** `M1BaselinePersistenceTest`
+**STATUS: gate green — M1 CLOSED.** `M1BaselinePersistenceTest`
 4/4 (isNew update-trap covered, bogus-runId message contract, clean
 overwrite, status machine intact); `StartupJanitorTest` 5/5; docker half
 hand-verified against a fake orphan (both teardown paths, diag-evidence
@@ -714,7 +713,7 @@ untouched); full reactor green via `mvn -pl agent-core -am test`.
 
 **M2 — LLM seam (~1 evening).** `ChatPort`/`SpringAiChatPort`,
 `BoundedReadSource`, `SystemPrompts` (+hash), `DecideTurn`/
-`SpringAiDecideTurn`, provider timeout (D7). Split 2026-09-25:
+`SpringAiDecideTurn`, provider timeout (D7). Split:
 **M2a** = `ChatPort`/`SpringAiChatPort` + `BoundedReadSource` +
 `SystemPrompts`/`DecideContext`/`HistoryEntry` + D7 bean;
 **M2b** = `DecideTurn`/`SpringAiDecideTurn` + the `FakeChatPort` battery.
@@ -722,7 +721,7 @@ Verify: unit tests with a `FakeChatPort` — valid decision passes; fenced-JSON
 passes; invalid→retry→ WASTED-path result; infra-exception→backoff→
 infraFailure; bound cuts off at 10; prompt-hash stable.
 
-**STATUS (2026-09-29): gate green — M2 CLOSED.** All M2 components
+**STATUS: gate green — M2 CLOSED.** All M2 components
 implemented and verified: `LoopConfig` (10 tests), `AgentConfig` `llmTimeout`
 customizer (4 tests), `SystemPrompts` hash stability + NON_NULL JSON context
 (4 tests), `BoundedReadSource` with cap + trajectory events (7 tests),
@@ -750,7 +749,7 @@ tests green, full reactor green via `mvn test`.
    Verify: `mvn -pl agent-core -am test "-Dtest=Step9VerifyGate"` green, no
    Docker, no DB, no API key.
 
-**STATUS (2026-09-29): gate green — M3 CLOSED.** `Step9VerifyGate` 8/8 scenarios
+**STATUS: gate green — M3 CLOSED.** `Step9VerifyGate` 8/8 scenarios
 green (happy path KEPT, regression REVERTED, invalid decision x2 WASTED, no-op
 edit WASTED, build failure REVERTED, guardrail cap ABORTED, kill-and-resume,
 trajectory events); `AgentLoop` state machine + `TargetPipeline` seams
@@ -766,7 +765,7 @@ complete; artifacts + sha256 on disk; **then** the build-steps STATUS note
 (this gate green = step 9 CLOSED), folding this spec's D1–D7 resolutions into
 the scope doc §10 where they differ from its text.
 
-**STATUS (2026-09-30): gate green — M4 CLOSED — STEP 9 CLOSED.**
+**STATUS: gate green — M4 CLOSED — STEP 9 CLOSED.**
 - Executed real end-to-end autonomous S1 run via `Step9RealRunGate` (1/1 green in 575.6s):
   - Run ID: `20260930-095612-acebc366`, status `COMPLETED`.
   - Pristine baseline (3 cycles): baseline RPS = 158.66, baseline p95 = 3401.06 ms.

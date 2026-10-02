@@ -8,12 +8,12 @@ off as runs produce data. Companion to `v1.0-scope.md` / `v1.0-build-steps.md`.
 
 ## A. Hypotheses needing hand-measurement (before the LLM ever runs)
 
-1. **S1 fix magnitude** — **SETTLED 2026-09-03** (REF `jar-unpack-exp`
+1. **S1 fix magnitude** — **SETTLED** (REF `jar-unpack-exp`
    vs h3 baseline): RPS +47%, p50 −87%, lock rate −81%, but p95 +24% /
    p99 +66% / max +139%. A saddle — correct mechanism, worse tail. It
    falsified the p95-only keep rule (scope §10.5 → keep-rule v2) and made
    S1's ground truth a two-step sequence.
-1b. **S1 convergence depth** — **SETTLED 2026-09-03** (REF
+1b. **S1 convergence depth** — **SETTLED** (REF
    `resource-cache-exp`): unpack + resource caching does NOT converge —
    hypothesis falsified, all deltas noise-level. Honest depth is ≥3
    iterations.

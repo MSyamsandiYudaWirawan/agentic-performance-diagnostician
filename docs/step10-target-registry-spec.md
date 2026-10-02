@@ -41,7 +41,7 @@ Pristine Base ──[apply patch]──> Committed Seed (baselineSha) ──[run
 - Seed patches for S2 and S3 are committed Git diffs / patch files stored under:
   `benchmarks/seeds/<targetId>.patch`
 - S1 has no patch (`seed_patch = null`).
-- S4 is ported from REF (`C:/study/java-backend-quality-analyzer/targets/practice-mvc`).
+- S4 is ported from REF (`targets/practice-mvc`).
 
 ### D2: Baseline Caching Key Contract (§10.24, §10.30)
 - The baseline cache key is a composite hash:

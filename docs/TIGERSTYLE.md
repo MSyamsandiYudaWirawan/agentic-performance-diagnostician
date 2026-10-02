@@ -1,5 +1,4 @@
 # TigerStyle / TigerBeetle Coding Principles
-# Apply to ALL code generated during the hackathon
 
 > "Boring code is good code. Clever code is suspect."
 > — TigerBeetle engineering philosophy
