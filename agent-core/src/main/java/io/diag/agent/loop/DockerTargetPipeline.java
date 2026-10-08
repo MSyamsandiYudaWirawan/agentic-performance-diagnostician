@@ -69,10 +69,13 @@ public final class DockerTargetPipeline implements TargetPipeline, AutoCloseable
     public SmokeResult smoke(int n) throws Exception {
         String label = "smoke-" + n;
         stack.up(label, lastJar);
-        LoadReport report = benchmarkRunner.run(label, true);
-        stack.down();
-        String verdict = report.getPayload().thresholds().verdict();
-        return new SmokeResult(!"NOT_TESTABLE".equals(verdict), verdict);
+        try {
+            LoadReport report = benchmarkRunner.run(label, true);
+            String verdict = report.getPayload().thresholds().verdict();
+            return new SmokeResult(!"NOT_TESTABLE".equals(verdict), verdict);
+        } finally {
+            stack.down();
+        }
     }
 
     @Override
@@ -81,17 +84,20 @@ public final class DockerTargetPipeline implements TargetPipeline, AutoCloseable
                 Map.of("action", "benchmark", "label", label), 0L, 0L, BigDecimal.ZERO);
 
         stack.up(label, lastJar);
-        LoadReport loadReport = benchmarkRunner.run(label, false);
-        Path jfrPath          = stack.stopAndHarvest(label);
-        JfrReportDto jfrDto   = jfrAnalyzer.analyze(jfrPath, prevJfr, runId, label);
-        JfrReport jfrEntity   = evidenceService.createJfrReport(runId, label, jfrDto, jfrPath);
-        stack.down();
+        try {
+            LoadReport loadReport = benchmarkRunner.run(label, false);
+            Path jfrPath          = stack.stopAndHarvest(label);
+            JfrReportDto jfrDto   = jfrAnalyzer.analyze(jfrPath, prevJfr, runId, label);
+            JfrReport jfrEntity   = evidenceService.createJfrReport(runId, label, jfrDto, jfrPath);
 
-        evidenceService.createTrajectoryEvent(runId, "TOOL_RESULT",
-                Map.of("label", label, "rps", loadReport.getPayload().rps()), 0L, 0L, BigDecimal.ZERO);
+            evidenceService.createTrajectoryEvent(runId, "TOOL_RESULT",
+                    Map.of("label", label, "rps", loadReport.getPayload().rps()), 0L, 0L, BigDecimal.ZERO);
 
-        return new BenchmarkCycle(loadReport.getPayload(), loadReport.getId(),
-                                  jfrDto, jfrEntity.getId());
+            return new BenchmarkCycle(loadReport.getPayload(), loadReport.getId(),
+                                      jfrDto, jfrEntity.getId());
+        } finally {
+            stack.down();
+        }
     }
 
     @Override

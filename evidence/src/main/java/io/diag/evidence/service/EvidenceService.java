@@ -1,6 +1,7 @@
 package io.diag.evidence.service;
 
 import io.diag.evidence.RunStatus;
+import io.diag.evidence.dto.BaselineReportsDto;
 import io.diag.evidence.dto.ChangeDto;
 import io.diag.evidence.dto.FilesTouchedDto;
 import io.diag.evidence.dto.HypothesisDto;
@@ -41,6 +42,8 @@ public interface EvidenceService {
 
     void recordKeptSha(String runId, String sha);
 
+    default void recordUsage(String runId, long tokensIn, long tokensOut, BigDecimal costUsd) {}
+
     // query methods for resume (§10.19)
     default Optional<Run> findRun(String runId) { return Optional.empty(); }
     default Optional<Run> findRunningRun() { return Optional.empty(); }
@@ -48,4 +51,5 @@ public interface EvidenceService {
     default List<LoadReport> findLoadReports(String runId) { return List.of(); }  // ordered by id asc (insertion order)
     default Optional<JfrReport> findJfrReport(String runId, String label) { return Optional.empty(); }
     default List<TrajectoryEvent> findTrajectoryEvents(String runId) { return List.of(); }
+    default Optional<BaselineReportsDto> findBaselineReportsByOriginSha(String originSha) { return Optional.empty(); }
 }

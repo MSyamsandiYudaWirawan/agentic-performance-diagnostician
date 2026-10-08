@@ -49,6 +49,9 @@ public final class KeepRule {
                     result.failRate(), ref.failRate()));
         }
 
+        if (d.prediction() == null || d.prediction().mechanismSignalToEliminate() == null) {
+            return new KeepDecision(false, null, "prediction or mechanismSignalToEliminate is null");
+        }
         String predicted = d.prediction().mechanismSignalToEliminate();
         // todo add list valid signal to ai
         // 1. find signal

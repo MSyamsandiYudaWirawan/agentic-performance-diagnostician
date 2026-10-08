@@ -1,6 +1,7 @@
 package io.diag.agent.loop;
 
 import io.diag.evidence.RunStatus;
+import io.diag.evidence.dto.BaselineReportsDto;
 import io.diag.evidence.dto.ChangeDto;
 import io.diag.evidence.dto.FilesTouchedDto;
 import io.diag.evidence.dto.FilesTouchedList;
@@ -204,6 +205,17 @@ public final class FakeEvidenceService implements EvidenceService {
     }
 
     @Override
+    public synchronized void recordUsage(String runId, long tokensIn, long tokensOut, BigDecimal costUsd) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        Run run = runs.get(runId);
+        if (run != null) {
+            run.setTokensIn(tokensIn);
+            run.setTokensOut(tokensOut);
+            run.setCostUsd(costUsd);
+        }
+    }
+
+    @Override
     public synchronized Optional<Run> findRun(String runId) {
         Objects.requireNonNull(runId, "runId must not be null");
         return Optional.ofNullable(runs.get(runId));
@@ -258,6 +270,70 @@ public final class FakeEvidenceService implements EvidenceService {
             }
             return matched;
         }
+    }
+
+    @Override
+    public synchronized Optional<BaselineReportsDto> findBaselineReportsByOriginSha(String originSha) {
+        Objects.requireNonNull(originSha, "originSha must not be null");
+
+        List<Run> matchingRuns = new ArrayList<>();
+        for (Run r : runs.values()) {
+            if (originSha.equals(r.getOriginSha()) && r.getBaselineP95Ms() != null) {
+                matchingRuns.add(r);
+            }
+        }
+        Collections.reverse(matchingRuns);
+
+        for (Run r : matchingRuns) {
+            Optional<BaselineReportsDto> reports = extractBaselineReports(r.getId());
+            if (reports.isPresent()) {
+                return reports;
+            }
+        }
+        return Optional.empty();
+    }
+
+    private synchronized Optional<BaselineReportsDto> extractBaselineReports(String runId) {
+        List<LoadReport> allReports = loadReports.get(runId);
+        if (allReports == null) {
+            return Optional.empty();
+        }
+        LoadReport b1 = null;
+        LoadReport b2 = null;
+        LoadReport b3 = null;
+
+        for (LoadReport lr : allReports) {
+            String label = lr.getLabel();
+            if ("baseline-1".equals(label)) {
+                b1 = lr;
+            } else if ("baseline-2".equals(label)) {
+                b2 = lr;
+            } else if ("baseline-3".equals(label)) {
+                b3 = lr;
+            }
+        }
+
+        if (b1 == null || b2 == null || b3 == null
+                || b1.getPayload() == null || b2.getPayload() == null || b3.getPayload() == null) {
+            return Optional.empty();
+        }
+
+        List<JfrReport> jfrs = jfrReports.get(runId);
+        if (jfrs == null) {
+            return Optional.empty();
+        }
+        JfrReport b3Jfr = null;
+        for (JfrReport jr : jfrs) {
+            if ("baseline-3".equals(jr.getLabel())) {
+                b3Jfr = jr;
+            }
+        }
+        if (b3Jfr == null || b3Jfr.getPayload() == null) {
+            return Optional.empty();
+        }
+
+        List<LoadReportDto> dtos = List.of(b1.getPayload(), b2.getPayload(), b3.getPayload());
+        return Optional.of(new BaselineReportsDto(runId, dtos, b3Jfr.getPayload()));
     }
 
     // -------------------------------------------------------------------------

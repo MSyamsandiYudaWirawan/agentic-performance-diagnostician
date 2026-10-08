@@ -1,6 +1,7 @@
 package io.diag.evidence.service.impl;
 
 import io.diag.evidence.RunStatus;
+import io.diag.evidence.dto.BaselineReportsDto;
 import io.diag.evidence.dto.ChangeDto;
 import io.diag.evidence.dto.FilesTouchedDto;
 import io.diag.evidence.dto.FilesTouchedList;
@@ -94,15 +95,18 @@ public class EvidenceServiceImpl implements EvidenceService {
         Objects.requireNonNull(runId, "runId must not be null");
         Objects.requireNonNull(label, "label must not be null");
         Objects.requireNonNull(dto, "dto must not be null");
-        Objects.requireNonNull(k6SummaryFile, "k6SummaryFile must not be null");
 
-        ArtifactStore.StoredArtifact stored = artifactStore.store(runId, label, k6SummaryFile);
+        String summaryPath = null;
+        if (k6SummaryFile != null) {
+            ArtifactStore.StoredArtifact stored = artifactStore.store(runId, label, k6SummaryFile);
+            summaryPath = stored.path().toString();
+        }
 
         LoadReport loadReport = LoadReport.builder()
                 .runId(runId)
                 .label(label)
                 .payload(dto)
-                .k6SummaryPath(stored.path().toString())
+                .k6SummaryPath(summaryPath)
                 .build();
         return loadReportRepository.save(loadReport);
     }
@@ -112,16 +116,21 @@ public class EvidenceServiceImpl implements EvidenceService {
         Objects.requireNonNull(runId, "runId must not be null");
         Objects.requireNonNull(label, "label must not be null");
         Objects.requireNonNull(dto, "dto must not be null");
-        Objects.requireNonNull(jfrFile, "jfrFile must not be null");
 
-        ArtifactStore.StoredArtifact stored = artifactStore.store(runId, label, jfrFile);
+        String jfrPath = null;
+        String jfrSha256 = null;
+        if (jfrFile != null) {
+            ArtifactStore.StoredArtifact stored = artifactStore.store(runId, label, jfrFile);
+            jfrPath = stored.path().toString();
+            jfrSha256 = stored.sha256();
+        }
 
         JfrReport jfrReport = JfrReport.builder()
                 .runId(runId)
                 .label(label)
                 .payload(dto)
-                .jfrPath(stored.path().toString())
-                .jfrSha256(stored.sha256())
+                .jfrPath(jfrPath)
+                .jfrSha256(jfrSha256)
                 .build();
         return jfrReportRepository.save(jfrReport);
     }
@@ -206,6 +215,12 @@ public class EvidenceServiceImpl implements EvidenceService {
     }
 
     @Override
+    public void recordUsage(String runId, long tokensIn, long tokensOut, BigDecimal costUsd) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        runRepository.updateRunUsage(runId, tokensIn, tokensOut, costUsd);
+    }
+
+    @Override
     public Optional<Run> findRun(String runId) {
         Objects.requireNonNull(runId, "runId must not be null");
         return runRepository.findById(runId);
@@ -239,5 +254,50 @@ public class EvidenceServiceImpl implements EvidenceService {
     public List<TrajectoryEvent> findTrajectoryEvents(String runId) {
         Objects.requireNonNull(runId, "runId must not be null");
         return trajectoryEventRepository.findByRunIdOrderByTsAsc(runId);
+    }
+
+    @Override
+    public Optional<BaselineReportsDto> findBaselineReportsByOriginSha(String originSha) {
+        Objects.requireNonNull(originSha, "originSha must not be null");
+
+        List<Run> candidateRuns = runRepository.findCompletedBaselinesByOriginSha(originSha);
+        for (Run r : candidateRuns) {
+            Optional<BaselineReportsDto> reports = extractBaselineReports(r.getId());
+            if (reports.isPresent()) {
+                return reports;
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<BaselineReportsDto> extractBaselineReports(String runId) {
+        List<LoadReport> allReports = loadReportRepository.findByRunIdOrderByIdAsc(runId);
+        LoadReport b1 = null;
+        LoadReport b2 = null;
+        LoadReport b3 = null;
+
+        for (LoadReport lr : allReports) {
+            String label = lr.getLabel();
+            if ("baseline-1".equals(label)) {
+                b1 = lr;
+            } else if ("baseline-2".equals(label)) {
+                b2 = lr;
+            } else if ("baseline-3".equals(label)) {
+                b3 = lr;
+            }
+        }
+
+        if (b1 == null || b2 == null || b3 == null
+                || b1.getPayload() == null || b2.getPayload() == null || b3.getPayload() == null) {
+            return Optional.empty();
+        }
+
+        Optional<JfrReport> jfrReport = jfrReportRepository.findByRunIdAndLabel(runId, "baseline-3");
+        if (jfrReport.isEmpty() || jfrReport.get().getPayload() == null) {
+            return Optional.empty();
+        }
+
+        List<LoadReportDto> dtos = List.of(b1.getPayload(), b2.getPayload(), b3.getPayload());
+        return Optional.of(new BaselineReportsDto(runId, dtos, jfrReport.get().getPayload()));
     }
 }

@@ -19,7 +19,7 @@ public final class FallbackDecisionExtractor {
 
     private static final Pattern HYPOTHESIS_PATTERN = Pattern.compile("\\b(H[1-7])\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern CONFIDENCE_PATTERN = Pattern.compile("confidence[^0-9]*([0-1](?:\\.[0-9]+)?)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern TEMPLATE_PATTERN   = Pattern.compile("template[\\s:\"]*(jar-unpack)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern TEMPLATE_PATTERN   = Pattern.compile("template[\\s:\"]*(jar-unpack|hikari-pool-size|jvm-opts)", Pattern.CASE_INSENSITIVE);
     private static final Pattern SIGNAL_PATTERN     = Pattern.compile("\\b(JavaMonitorEnter|ThreadPark|SocketRead|SocketWrite|GCPhasePause|ExecutionSample|ObjectAllocationSample|ExceptionThrow)\\b");
 
     private FallbackDecisionExtractor() {}
@@ -47,13 +47,17 @@ public final class FallbackDecisionExtractor {
             }
         }
 
-        // 3. Change template (only jar-unpack is admitted)
+        // 3. Change template (jar-unpack, hikari-pool-size, jvm-opts)
         Matcher tplMatcher = TEMPLATE_PATTERN.matcher(text);
         String templateName = null;
         if (tplMatcher.find()) {
             templateName = tplMatcher.group(1).toLowerCase();
         } else if (text.toLowerCase().contains("jar-unpack")) {
             templateName = "jar-unpack";
+        } else if (text.toLowerCase().contains("hikari-pool-size")) {
+            templateName = "hikari-pool-size";
+        } else if (text.toLowerCase().contains("jvm-opts")) {
+            templateName = "jvm-opts";
         }
         if (templateName == null) {
             return null;

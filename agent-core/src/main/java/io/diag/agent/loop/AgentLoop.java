@@ -3,6 +3,8 @@ package io.diag.agent.loop;
 import io.diag.agent.config.GenParams;
 import io.diag.agent.decision.DecisionDto;
 import io.diag.evidence.RunStatus;
+import io.diag.evidence.dto.BaselineReportsDto;
+import io.diag.evidence.dto.FilesTouchedDto;
 import io.diag.evidence.dto.JfrReportDto;
 import io.diag.evidence.dto.LoadReportDto;
 import io.diag.evidence.entity.Iteration;
@@ -144,6 +146,9 @@ public final class AgentLoop {
             throw new IllegalStateException(
                     "run " + resumeRunId + " is not resumable (status=" + run.getStatus() + ")");
         }
+        if (RunStatus.ABORTED.name().equals(run.getStatus())) {
+            evidenceService.transitionRunStatus(resumeRunId, RunStatus.ABORTED, RunStatus.RUNNING);
+        }
 
         // single-flight: no OTHER running row
         evidenceService.findRunningRun().ifPresent(other -> {
@@ -152,7 +157,8 @@ public final class AgentLoop {
             }
         });
 
-        lastKeptSha = run.getLastKeptSha() != null ? run.getLastKeptSha() : run.getOriginSha();
+        String originSha = run.getOriginSha() != null ? run.getOriginSha() : changeApplier.currentSha(targetRepo);
+        lastKeptSha = run.getLastKeptSha() != null ? run.getLastKeptSha() : originSha;
 
         // revert-if-dirty (§10.25)
         String currentSha = changeApplier.currentSha(targetRepo);
@@ -160,33 +166,55 @@ public final class AgentLoop {
             changeApplier.revertTo(targetRepo, lastKeptSha);
         }
 
+        if (run.getTokensIn() != null) tokensIn = run.getTokensIn();
+        if (run.getTokensOut() != null) tokensOut = run.getTokensOut();
+        if (run.getCostUsd() != null) costUsd = run.getCostUsd();
+
         List<Iteration> existing = evidenceService.findIterations(runId);
 
         if (run.getBaselineP95Ms() == null) {
             // died during baselining — redo
-            baselinePhase(run.getOriginSha());
+            baselinePhase(originSha);
         } else {
             // reload baseline from the three persisted load reports (§9 p50-floor resume gap)
             List<LoadReport> allReports = evidenceService.findLoadReports(runId);
             List<LoadReportDto> baselineDtos = new ArrayList<>();
+            Map<Long, LoadReport> reportsById = new LinkedHashMap<>();
             for (LoadReport lr : allReports) {
+                if (lr.getId() != null) {
+                    reportsById.put(lr.getId(), lr);
+                }
                 String lbl = lr.getLabel();
                 if ("baseline-1".equals(lbl) || "baseline-2".equals(lbl) || "baseline-3".equals(lbl)) {
                     baselineDtos.add(lr.getPayload());
                 }
             }
-            baseline = Baseline.of(baselineDtos);
+            if (baselineDtos.size() == 3) {
+                baseline = Baseline.of(baselineDtos);
+            } else {
+                // incomplete baseline load reports persisted in DB — redo
+                baselinePhase(originSha);
+            }
 
             // lastKeptJfr: latest KEPT iteration's jfr, else baseline-3
             String lastKeptLabel = "baseline-3";
+            Long lastKeptLoadReportId = null;
             for (Iteration it : existing) {
                 if ("KEPT".equals(it.getOutcome())) {
                     lastKeptLabel = "iter-" + it.getN();
+                    lastKeptLoadReportId = it.getLoadReportId();
                 }
             }
             lastKeptJfr = evidenceService.findJfrReport(runId, lastKeptLabel)
                     .map(JfrReport::getPayload)
                     .orElse(null);
+
+            if (lastKeptLoadReportId != null && reportsById.containsKey(lastKeptLoadReportId)) {
+                LoadReport lr = reportsById.get(lastKeptLoadReportId);
+                if (lr != null && lr.getPayload() != null) {
+                    baseline = new Baseline(lr.getPayload(), baseline.floors());
+                }
+            }
 
             // rebuild ledger and history from existing rows
             for (Iteration it : existing) {
@@ -197,6 +225,17 @@ public final class AgentLoop {
                         }
                     }
                 }
+                Double iterRps = null;
+                Double iterP95 = null;
+                if (it.getLoadReportId() != null && reportsById.containsKey(it.getLoadReportId())) {
+                    LoadReport lr = reportsById.get(it.getLoadReportId());
+                    if (lr != null && lr.getPayload() != null) {
+                        iterRps = lr.getPayload().rps();
+                        if (lr.getPayload().latency() != null) {
+                            iterP95 = lr.getPayload().latency().p95();
+                        }
+                    }
+                }
                 history.add(new HistoryEntry(
                         it.getN(),
                         it.getHypothesis() != null ? it.getHypothesis().category() : "?",
@@ -204,7 +243,7 @@ public final class AgentLoop {
                         it.getChange() != null ? it.getChange().kind() : "?",
                         it.getOutcome(),
                         it.getKeepType(),
-                        null, null,
+                        iterRps, iterP95,
                         it.getFinding()));
             }
         }
@@ -236,20 +275,34 @@ public final class AgentLoop {
             if (hit.isPresent()) {
                 BaselineCacheEntry entry = hit.get();
                 log.info("Baseline cache HIT for profile_hash={} — skipping 3-cycle baseline execution", profileHash);
-                baseline = Baseline.of(entry.loadReports());
-                lastKeptJfr = entry.jfrReport();
-                evidenceService.recordBaseline(runId,
-                        entry.baselineP95Ms(), entry.noiseFloorMs(),
-                        entry.baselineRps(), entry.noiseFloorRps(),
-                        originSha);
-                for (int i = 0; i < entry.loadReports().size(); i++) {
-                    evidenceService.createLoadReport(runId, "baseline-" + (i + 1), entry.loadReports().get(i), null);
-                }
+                applyBaselineEntry(entry, originSha);
                 return;
             }
-            log.info("Baseline cache MISS for profile_hash={} — executing 3-cycle baseline", profileHash);
+            log.info("Baseline cache MISS for profile_hash={}", profileHash);
         }
 
+        // Check Evidence DB for previous runs with the same originSha
+        Optional<BaselineReportsDto> dbBaseline = evidenceService.findBaselineReportsByOriginSha(originSha);
+        if (dbBaseline.isPresent()) {
+            BaselineReportsDto reports = dbBaseline.get();
+            log.info("Baseline DB HIT for originSha={} (from run {}) — populating cache and skipping 3-cycle baseline",
+                    originSha, reports.runId());
+            Baseline built = Baseline.of(reports.loadReports());
+            NoiseFloors f = built.floors();
+            BaselineCacheEntry entry = new BaselineCacheEntry(
+                    profileHash,
+                    built.reference().latency().p95(), f.p95FloorMs(),
+                    built.reference().rps(), f.rpsFloor(),
+                    reports.loadReports(), reports.jfrReport());
+
+            if (baselineCache != null) {
+                baselineCache.put(entry);
+            }
+            applyBaselineEntry(entry, originSha);
+            return;
+        }
+
+        log.info("Baseline DB MISS for originSha={} — executing 3-cycle baseline", originSha);
         targetPipeline.rebuild();
         List<LoadReportDto> loads = new ArrayList<>(3);
         JfrReportDto b3Jfr = null;
@@ -278,15 +331,41 @@ public final class AgentLoop {
         }
     }
 
+    private void applyBaselineEntry(BaselineCacheEntry entry, String originSha) {
+        baseline = Baseline.of(entry.loadReports());
+        lastKeptJfr = entry.jfrReport();
+
+        // Avoid overriding baseline on run if already recorded
+        boolean alreadyRecorded = evidenceService.findRun(runId)
+                .map(r -> r.getBaselineP95Ms() != null)
+                .orElse(false);
+        if (!alreadyRecorded) {
+            evidenceService.recordBaseline(runId,
+                    entry.baselineP95Ms(), entry.noiseFloorMs(),
+                    entry.baselineRps(), entry.noiseFloorRps(),
+                    originSha);
+        }
+
+        // Attach baseline load reports only if not already present for runId
+        List<LoadReport> existingLoads = evidenceService.findLoadReports(runId);
+        boolean hasBaselines = existingLoads.stream()
+                .anyMatch(lr -> lr.getLabel() != null && lr.getLabel().startsWith("baseline-"));
+        if (!hasBaselines) {
+            for (int i = 0; i < entry.loadReports().size(); i++) {
+                evidenceService.createLoadReport(runId, "baseline-" + (i + 1), entry.loadReports().get(i), null);
+            }
+        }
+        if (entry.jfrReport() != null && evidenceService.findJfrReport(runId, "baseline-3").isEmpty()) {
+            evidenceService.createJfrReport(runId, "baseline-3", entry.jfrReport(), null);
+        }
+    }
+
     private void iterate(int startN) throws Exception {
         for (int n = startN; n <= loopConfig.maxIterations(); n++) {
             checkGuardrails();
 
             DecisionDto dec = decidePhase(n);
-            if (dec == null) {
-                log.warn("Decision invalid at iteration {} — stopping loop early to avoid token waste", n);
-                break;
-            }
+            if (dec == null) continue;  // WASTED — invalid decision after retry
 
             checkGuardrails();
 
@@ -413,6 +492,10 @@ public final class AgentLoop {
                 baseline.floors(), loopConfig.keepP95RegressionBound());
 
         String finding = buildFinding(dec, baseline.reference(), cycle, kd);
+        List<FilesTouchedDto> files =
+                (changeResult != null && changeResult.filesTouched() != null)
+                        ? changeResult.filesTouched().files()
+                        : List.of();
 
         if (kd.keep()) {
             lastKeptSha = changeResult.commitSha();
@@ -424,7 +507,7 @@ public final class AgentLoop {
                     Map.copyOf(ledger), dec.change(),
                     "KEPT", lastKeptSha,
                     cycle.loadReportId(), cycle.jfrReportId(),
-                    changeResult.filesTouched().files(), kd.keepType(), finding);
+                    files, kd.keepType(), finding);
             history.add(new HistoryEntry(n,
                     dec.hypothesis().category(), dec.hypothesis().confidence(),
                     dec.change().kind(), "KEPT", kd.keepType(),
@@ -435,7 +518,7 @@ public final class AgentLoop {
                     Map.copyOf(ledger), dec.change(),
                     "REVERTED", lastKeptSha,
                     cycle.loadReportId(), cycle.jfrReportId(),
-                    changeResult.filesTouched().files(), null, finding);
+                    files, null, finding);
             history.add(new HistoryEntry(n,
                     dec.hypothesis().category(), dec.hypothesis().confidence(),
                     dec.change().kind(), "REVERTED", null,
@@ -479,12 +562,23 @@ public final class AgentLoop {
             log.error("finish: revert-if-dirty failed", e);
         }
         try {
+            evidenceService.recordUsage(runId, tokensIn, tokensOut, costUsd);
+        } catch (Exception e) {
+            log.warn("finish: recordUsage failed for run {}", runId, e);
+        }
+        try {
             evidenceService.transitionRunStatus(runId, RunStatus.RUNNING, targetStatus);
         } catch (IllegalStateException e) {
             // Already transitioned or idempotent finish
             log.info("finish: run {} status transition to {} skipped ({})", runId, targetStatus, e.getMessage());
         } catch (Exception e) {
             log.error("finish: status transition to {} failed", targetStatus, e);
+        } finally {
+            try {
+                targetPipeline.close();
+            } catch (Exception e) {
+                log.warn("finish: targetPipeline.close() failed for run {}", runId, e);
+            }
         }
     }
 
@@ -493,10 +587,14 @@ public final class AgentLoop {
     // -------------------------------------------------------------------------
 
     private void initRunState() {
-        tokensIn  = 0L;
-        tokensOut = 0L;
-        costUsd   = BigDecimal.ZERO;
-        startWall = Instant.now();
+        runId       = null;
+        lastKeptSha = null;
+        baseline    = null;
+        lastKeptJfr = null;
+        tokensIn    = 0L;
+        tokensOut   = 0L;
+        costUsd     = BigDecimal.ZERO;
+        startWall   = Instant.now();
         ledger.clear();
         history.clear();
         for (int i = 1; i <= 7; i++) ledger.put("H" + i, 0.0);
@@ -536,7 +634,7 @@ public final class AgentLoop {
     }
 
     private String buildFinding(DecisionDto dec, LoadReportDto ref,
-                                 BenchmarkCycle cycle, KeepDecision kd) {
+                                BenchmarkCycle cycle, KeepDecision kd) {
         String signal = dec.prediction().mechanismSignalToEliminate();
         long prevCount   = 0;
         long resultCount = 0;
@@ -544,7 +642,7 @@ public final class AgentLoop {
                 && lastKeptJfr.signals().containsKey(signal)) {
             prevCount = lastKeptJfr.signals().get(signal).count();
         }
-        if (cycle.jfr().signals() != null && cycle.jfr().signals().containsKey(signal)) {
+        if (cycle.jfr() != null && cycle.jfr().signals() != null && cycle.jfr().signals().containsKey(signal)) {
             resultCount = cycle.jfr().signals().get(signal).count();
         }
         double signalPct = prevCount > 0 ? (100.0 * (resultCount - prevCount) / prevCount) : 0.0;
