@@ -21,10 +21,10 @@ Implement episodic vector memory for the autonomous diagnostic agent. Each histo
  │                                                                        │
  │   Tools available during decide turn:                                  │
  │   - readSource(path)                                                   │
- │   - runBenchmark(label)                                                │
+ │   - runBenchmark(label)                                                │ 
  │   - captureAndAnalyzeJfr(label)                                        │
  │   - applyChange(description, change)                                   │
- │   - queryPastFindings(symptomQuery) ────────────┐                      │
+ │   - queryPastFindings(...) [Unified Hybrid Tool] ───┐                      │
  └─────────────────────────────────────────────────┼──────────────────────┘
                                                    │ LLM executes tool
                                                    ▼
@@ -113,11 +113,35 @@ Nearest-neighbor vector search can return multiple iterations from the same targ
 * **Diversity Rule**: The retriever deduplicates retrieved candidates by `(targetId, template)`. If multiple records share the same target and template, only the highest-scoring candidate is retained.
 * This ensures the top-K budget (default 3) delivers diverse perspectives rather than 3 identical warnings.
 
-### D6: Agentic Tool-Based Retrieval (On-Demand vs. Passive Stuffing)
-Rather than blindly stuffing past iterations into the prompt context on every single turn (passive RAG):
-* **On-Demand Search**: The LLM is provided with a dedicated tool (`queryPastFindings(symptomQuery)`).
-* **Targeted Inquiries**: The LLM formulates specific queries when it identifies suspect bottlenecks (e.g. `queryPastFindings("lock contention JarFile ClassLoader")` or `queryPastFindings("hikari connection pool exhaustion")`).
-* **Invisible Server-Side Guardrails**: The tool intercepts the LLM's query, enforces `isEvaluationMode` filtering, dedups results, and decorates matches with the appropriate evidence advisory tags before returning the envelope.
+### D6: Agentic Tool-Based Retrieval & Unified Hybrid Search
+Rather than blindly stuffing past iterations into the prompt context on every single turn (passive RAG), episodic memory is queried on-demand via a single, unified hybrid tool: `queryPastFindings(...)`.
+
+#### Why 1 Unified Tool instead of 2 (Semantic + Metadata)?
+Separating into two tools (`queryPastFindings` and `filterMetadataFindings`) induces LLM choice paralysis, doubles prompt token overhead, and forbids hybrid queries ("find lock contention symptoms where outcome was KEPT"). With one unified tool, the agent can perform:
+1. **Pure Semantic Search**: `queryPastFindings(symptomQuery="lock contention on ClassLoader")`
+2. **Filtered Hybrid Search**: `queryPastFindings(symptomQuery="lock contention", outcome="KEPT")`
+3. **Pure Metadata Audit**: `queryPastFindings(category="H3", outcome="KEPT")` (no text query)
+
+#### The 5 Essential Metadata Query Guards
+Allowing an LLM to supply filter parameters introduces critical security, evaluation, and vector space failure modes. Five strict server-side guards are enforced within the tool layer:
+1. **Target Isolation & Eval-Bypass Guard (`currentTargetId` Server-Side Hardcoded)**:
+   - *Risk*: If `targetId` were exposed as a tool parameter, an LLM could query its own target during benchmarks or snoop across boundaries.
+   - *Defense*: `targetId` is **never exposed** to the LLM's tool interface. In benchmark mode (`isEvaluationMode = true`), the tool hard-enforces `b.ne("targetId", currentTargetId)` regardless of LLM parameters. In production mode, target-awareness is handled internally by the advisory formatter.
+2. **Whitelist & Enum Validation Guard (Fail-Fast on Hallucinations)**:
+   - *Risk*: LLMs hallucinate invalid filter values (e.g. `category="database"`, `outcome="SUCCESS"`), causing silent empty matches or database query errors.
+   - *Defense*: Validated strictly before query dispatch:
+     - `category`: Must match `^H[1-7]$` or be null. If invalid, returns `ToolEnvelope.fail("Invalid category: '" + category + "'. Must be one of H1..H7 (e.g. H1=CPU, H2=IO, H3=GC, H4=Lock, H5=Classload, H6=Config, H7=Custom).")`.
+     - `outcome`: Normalized to uppercase and must equal `"KEPT"` or `"REVERTED"` or be null. Any other value returns `ToolEnvelope.fail("Invalid outcome: '" + outcome + "'. Must be 'KEPT' or 'REVERTED'.")`.
+3. **All-Null DoS & Unbounded Scan Guard**:
+   - *Risk*: The LLM invokes the tool with all parameters null or empty (`symptomQuery=null, category=null, template=null, outcome=null`), attempting an accidental dump of all vector records.
+   - *Defense*: The tool checks that at least one search criterion is non-blank. If all are blank, immediately returns `ToolEnvelope.fail("At least one search criterion must be provided: symptomQuery, category, template, or outcome.")`.
+4. **Dynamic Similarity Threshold Guard (Pure Metadata vs. Hybrid Search)**:
+   - *Risk*: For semantic or hybrid queries, `similarityThreshold = 0.70` prevents irrelevant vector noise. But for **pure metadata queries** (where `symptomQuery == null`), there is no semantic vector. If a dummy vector or default threshold were applied, 100% of valid metadata records would be filtered out by cosine distance!
+   - *Defense (Unified Dummy-Vector Approach)*: When `symptomQuery` is absent, the retriever queries via `SearchRequest.builder().query("").similarityThreshold(0.0).filterExpression(filterExpression).topK(topK).build()`. Setting `similarityThreshold = 0.0` ensures uniform execution across both in-memory `SimpleVectorStore` (test seam) and PostgreSQL `PgVectorStore` (production) without code bifurcation or null vector crashes.
+5. **Fail-Fast Length Caps & Input Sanitization Guard**:
+   - *Risk*: Runaway LLM generation injecting thousands of characters or control sequences into filter fields. Silent truncation would violate TigerStyle Section 4 and mask query degradation from the model.
+   - *Defense*: TigerStyle fail-fast validation. If `symptomQuery.length() > 400`, the tool immediately returns `ToolEnvelope.fail("symptomQuery exceeds 400 character limit (" + symptomQuery.length() + " chars). Please provide a more focused query.")`. Other parameters enforce strict caps (`category <= 10`, `template <= 50`, `outcome <= 10`), whitespace trimming, and sanitization.
+
 
 ### D7: PostgreSQL (`pgvector`) Storage & Migration
 Episodic vectors live in the existing Evidence PostgreSQL database:
@@ -248,17 +272,52 @@ import java.util.List;
 
 public interface DiagnosticMemoryRetriever {
     /**
-     * Retrieves diverse past diagnostic experiences matching current symptoms.
+     * Search criteria container for hybrid semantic and metadata retrieval.
+     */
+    record MemoryQuery(
+            String symptomQuery,
+            String category,
+            String template,
+            String outcome
+    ) {
+        public boolean hasSymptomQuery() {
+            return symptomQuery != null && !symptomQuery.isBlank();
+        }
+
+        /**
+         * Human/LLM-friendly summary of active criteria (avoids leaking Java record syntax).
+         */
+        public String toCriteriaSummary() {
+            java.util.List<String> parts = new java.util.ArrayList<>();
+            if (hasSymptomQuery()) parts.add("symptom='" + symptomQuery + "'");
+            if (category != null) parts.add("category=" + category);
+            if (template != null) parts.add("template=" + template);
+            if (outcome != null) parts.add("outcome=" + outcome);
+            return String.join(", ", parts);
+        }
+    }
+
+    /**
+     * Retrieves diverse past diagnostic experiences matching symptoms and/or metadata filters.
      * 
      * Operational parameters (topK, similarityThreshold, evaluationMode, embeddingModel)
      * are read directly from the injected MemoryConfig and executed directly via
      * VectorStore.similaritySearch(SearchRequest).
      *
-     * @param symptomQuery Formatted symptom summary or LLM-formulated query
-     * @param currentTargetId The target currently being diagnosed
+     * Execution Semantics (Guard 4):
+     * 1. Hybrid / Semantic (query.hasSymptomQuery() == true):
+     *    SearchRequest.builder().query(query.symptomQuery()).similarityThreshold(config.similarityThreshold()).filterExpression(filter).topK(config.topK()).build()
+     * 2. Pure Metadata (query.hasSymptomQuery() == false):
+     *    SearchRequest.builder().query("").similarityThreshold(0.0).filterExpression(filter).topK(config.topK()).build()
+     *    Note: MemoryConfig enforces similarityThreshold in (0.0, 1.0] for semantic queries to prevent misconfiguration.
+     *    Guard 4 passes 0.0 directly to SearchRequest at runtime for pure metadata audits, ensuring uniform behavior
+     *    across SimpleVectorStore and PgVectorStore without bifurcating code.
+     *
+     * @param query Structured query containing optional semantic text and metadata filters
+     * @param currentTargetId The target currently being diagnosed (for eval isolation)
      * @return List of deduplicated, filtered memory documents (size <= config.topK())
      */
-    List<Document> retrieve(String symptomQuery, String currentTargetId);
+    List<Document> retrieve(MemoryQuery query, String currentTargetId);
 }
 ```
 
@@ -302,12 +361,20 @@ import java.util.List;
 
 public interface MemoryContextFormatter {
     /**
-     * Formats retrieved documents into the tool response text, decorating
-     * memories with context-aware evidence advisories:
-     * - [CAUTION - Same Service] (Reverted on current target: discourage repeat without hard censor)
-     * - [OBSERVATION - Other Service] (Reverted on different target: informative context)
-     * - [BASELINE - Same Service] (Kept on current target: verify if already active)
-     * - [PROVEN PATTERN - Other Service] (Kept on different target: high-confidence precedent)
+     * Formats retrieved documents into the tool response text.
+     * Each experience block begins with a standardized advisory header:
+     *   [Experience N] [<ADVISORY_TAG>: <targetId>]
+     * where <ADVISORY_TAG> is one of:
+     *   - CAUTION - Same Service (Reverted on current target: discourage repeat without hard censor)
+     *   - OBSERVATION - Other Service (Reverted on different target: informative context)
+     *   - BASELINE - Same Service (Kept on current target: verify if already active in codebase)
+     *   - PROVEN PATTERN - Other Service (Kept on different target: high-confidence precedent)
+     * Followed by structured bullet fields:
+     *   - SYMPTOM: ...
+     *   - ACTION: ...
+     *   - OUTCOME: ...
+     *   - FINDING: ...
+     *   - ADVISORY: <Contextual rationale and guidance>
      */
     String formatForPrompt(List<Document> memories, String currentTargetId);
 }
@@ -323,27 +390,73 @@ Added to `io.diag.agent.tools.DiagnosticTools` as the 5th tool alongside `readSo
 package io.diag.agent.tools;
 
 import io.diag.agent.ToolEnvelope; // Existing wrapper from io.diag.agent
+import io.diag.agent.memory.DiagnosticMemoryRetriever.MemoryQuery;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+
+import java.util.List;
+import java.util.Set;
 
 @Tool(description = """
         Search episodic memory of past diagnostic runs across services for similar symptoms, bottlenecks, or fixes.
-        Provide a focused query describing the symptom or suspect mechanism (e.g. 'lock contention on classloader'
-        or 'Hikari connection pool timeout under load').
+        Supports semantic search, structured metadata filtering, or hybrid search.
+        At least one parameter must be provided.
         Returns past attempted actions, whether they were KEPT or REVERTED, and key findings.
         """)
-public ToolEnvelope<String> queryPastFindings(String symptomQuery) {
+public ToolEnvelope<String> queryPastFindings(
+        @ToolParam(description = "Suspect symptom, bottleneck, or mechanism (e.g. 'lock contention on classloader' or 'Hikari connection pool timeout')", required = false)
+        String symptomQuery,
+        @ToolParam(description = "Diagnostic hypothesis category: H1 (CPU), H2 (IO/Pool), H3 (GC/Alloc), H4 (Lock/Sync), H5 (Classload), H6 (Config), H7 (Custom)", required = false)
+        String category,
+        @ToolParam(description = "Action template name (e.g. 'hikari-pool-size', 'jar-unpack', 'jvm-opts')", required = false)
+        String template,
+        @ToolParam(description = "Outcome filter: 'KEPT' (only successful fixes) or 'REVERTED' (failed attempts)", required = false)
+        String outcome
+) {
+    if (!memoryConfig.enabled()) {
+        return ToolEnvelope.ok("Episodic memory is disabled for this run.");
+    }
+
+    // Guard 1: currentTargetId is server-side context; never exposed as a parameter.
+    // Guard 3: All-null DoS prevention (require at least 1 non-blank criterion)
+    boolean hasSymptom = symptomQuery != null && !symptomQuery.isBlank();
+    boolean hasCategory = category != null && !category.isBlank();
+    boolean hasTemplate = template != null && !template.isBlank();
+    boolean hasOutcome = outcome != null && !outcome.isBlank();
+
+    if (!hasSymptom && !hasCategory && !hasTemplate && !hasOutcome) {
+        return ToolEnvelope.fail("At least one search criterion must be provided: symptomQuery, category, template, or outcome.");
+    }
+
+    // Guard 5: Fail-fast length caps & string sanitization (TigerStyle Section 4: no silent truncation)
+    if (hasSymptom && symptomQuery.length() > 400) {
+        return ToolEnvelope.fail("symptomQuery exceeds 400 character limit (" + symptomQuery.length() + " chars). Please provide a more focused query.");
+    }
+    String cleanCategory = hasCategory ? category.trim().toUpperCase() : null;
+    String cleanTemplate = hasTemplate ? template.trim() : null;
+    String cleanOutcome = hasOutcome ? outcome.trim().toUpperCase() : null;
+
+    // Guard 2: Whitelist & enum validation (fail fast on hallucinations)
+    if (cleanCategory != null && !cleanCategory.matches("^H[1-7]$")) {
+        return ToolEnvelope.fail("Invalid category: '" + category + "'. Must be one of H1..H7 (e.g. H1=CPU, H2=IO, H3=GC, H4=Lock, H5=Classload, H6=Config, H7=Custom).");
+    }
+    if (cleanOutcome != null && !Set.of("KEPT", "REVERTED").contains(cleanOutcome)) {
+        return ToolEnvelope.fail("Invalid outcome: '" + outcome + "'. Must be 'KEPT' or 'REVERTED'.");
+    }
+    if (cleanTemplate != null && cleanTemplate.length() > 50) {
+        return ToolEnvelope.fail("template parameter exceeds maximum length of 50 characters.");
+    }
+
     try {
-        if (symptomQuery == null || symptomQuery.isBlank()) {
-            return ToolEnvelope.fail("symptomQuery must not be blank");
-        }
+        // Guard 4 (dynamic threshold) & eval-isolation are executed inside memoryRetriever
+        MemoryQuery query = new MemoryQuery(hasSymptom ? symptomQuery : null, cleanCategory, cleanTemplate, cleanOutcome);
+        List<Document> memories = memoryRetriever.retrieve(query, currentTargetId);
 
-        // 1. Retrieve with server-side safety guards (eval isolation, dedup, threshold)
-        List<Document> memories = memoryRetriever.retrieve(symptomQuery, currentTargetId);
         if (memories.isEmpty()) {
-            return ToolEnvelope.ok("No matching past diagnostic runs found for: " + symptomQuery);
+            return ToolEnvelope.ok("No matching past diagnostic runs found for criteria: " + query.toCriteriaSummary());
         }
 
-        // 2. Format with non-dogmatic evidence advisory tags
+        // Format with non-dogmatic evidence advisory tags
         String formatted = memoryFormatter.formatForPrompt(memories, currentTargetId);
         return ToolEnvelope.ok(formatted);
     } catch (Exception e) {
@@ -399,26 +512,33 @@ When returned by `queryPastFindings` and formatted into the tool envelope:
 ```text
 === EPISODIC MEMORY (RELEVANT PAST EXPERIENCES) ===
 
-[Experience 1] (PROVEN PATTERN - Cross-Target: practice-mvc-s4)
+[Experience 1] [PROVEN PATTERN - Other Service: practice-mvc-s4]
 - SYMPTOM: Load: 210 RPS, p95 1850ms. Hotspots: JavaMonitorEnter (CRITICAL, count=45200, frames=[PetClinicService.findOwners])
 - ACTION: Applied concurrency optimization on monitor.
 - OUTCOME: KEPT (RPS +62%, p95 -45%)
 - FINDING: Reducing synchronized block scope resolved thread parking cascade.
-[ADVISORY]: Succeeded on practice-mvc-s4 for similar lock symptoms. High-confidence candidate to investigate.
+- ADVISORY: Succeeded on practice-mvc-s4 for similar lock symptoms. High-confidence candidate to investigate.
 
-[Experience 2] (CAUTION - Same Service: petclinic)
+[Experience 2] [CAUTION - Same Service: petclinic]
 - SYMPTOM: Load: 189 RPS, p95 2400ms. Hotspots: JavaMonitorEnter (CRITICAL, count=71738, frames=[JarFile.getBytes, URLClassPath.getLoader])
 - ACTION: hikari-pool-size=30
 - OUTCOME: REVERTED
 - FINDING: Pool increase did not relieve lock contention on classloader.
-[ADVISORY]: Attempted and REVERTED on this service earlier. Strongly discouraged unless you have clear evidence that the underlying mechanism differs.
+- ADVISORY: Attempted and REVERTED on this service earlier. Strongly discouraged unless you have clear evidence that the underlying mechanism differs.
 
-[Experience 3] (BASELINE - Same Service: petclinic)
+[Experience 3] [BASELINE - Same Service: petclinic]
 - SYMPTOM: Load: 189 RPS, p95 2400ms. Hotspots: JavaMonitorEnter (CRITICAL, count=71738, frames=[JarFile.getBytes, URLClassPath.getLoader])
 - ACTION: jar-unpack
 - OUTCOME: KEPT
 - FINDING: Unpacking jar eliminated 81% of lock contention events.
-[ADVISORY]: This fix was already KEPT in an earlier run and is active in your baseline. Verify before proposing again.
+- ADVISORY: This fix was already KEPT in an earlier run and is active in your baseline. Verify before proposing again.
+
+[Experience 4] [OBSERVATION - Other Service: petclinic-s2]
+- SYMPTOM: Load: 205 RPS, p95 1900ms. Hotspots: JavaMonitorEnter (CRITICAL, count=51200, frames=[OrderService.checkout])
+- ACTION: db-fetch-size=50
+- OUTCOME: REVERTED
+- FINDING: Changing JDBC fetch size caused memory pressure without reducing lock wait.
+- ADVISORY: Reverted on petclinic-s2. Informative context: verify if your bottleneck shares the same root cause before attempting.
 ```
 
 ---
@@ -460,7 +580,12 @@ When returned by `queryPastFindings` and formatted into the tool envelope:
   2. Cross-target + `REVERTED` outputs `[OBSERVATION - Other Service]: ...` (contextual warning, root causes may differ).
   3. Same-target + `KEPT` outputs `[BASELINE - Same Service]: ...` (prompts verification of current active baseline).
   4. Cross-target + `KEPT` outputs `[PROVEN PATTERN - Other Service]: ...` (proven recipe under similar symptoms).
-  5. Tool `queryPastFindings("lock contention")` successfully returns `ToolEnvelope.ok(...)` with formatted memory, or `ToolEnvelope.ok("No matching...")` when empty.
+  5. **Hybrid Search Test**: Query with `symptomQuery="lock contention", outcome="KEPT"` returns only KEPT lock records.
+  6. **Guard 4 (Dynamic Threshold Verification)**: Query with `symptomQuery=null, category="H3", outcome="KEPT"`. Assert matching documents are returned even without a symptom query vector, verifying `similarityThreshold=0.0` prevents cosine distance dropouts across both `SimpleVectorStore` and `PgVectorStore`.
+  7. **Guard 1 (Eval-Isolation)**: Verify `currentTargetId` cannot be overridden via query parameters and is enforced under evaluation mode.
+  8. **Guard 2 (Whitelist Validation)**: Invoking tool with `category="database"` returns `ToolEnvelope.fail(...)` containing invalid category error. Invoking with `outcome="FAILED"` returns `ToolEnvelope.fail(...)`.
+  9. **Guard 3 (All-Null Prevention)**: Invoking tool with all arguments null returns `ToolEnvelope.fail(...)` with descriptive error.
+  10. **Guard 5 (Fail-Fast Length Caps & Sanitization)**: Query with `symptomQuery` length > 400 returns `ToolEnvelope.fail(...)` specifying character count and limit. Leading/trailing whitespace safely trimmed.
 
 ### Milestone M4: Deterministic Loop Verification Gate (`Step13VerifyGate`)
 Adheres to the project's TigerStyle gate pattern (mirrors `Step9VerifyGate`): **100% offline, deterministic, zero API token cost**.
@@ -494,7 +619,7 @@ This section documents the foundational engineering decisions and tradeoffs behi
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                        6 CORE ARCHITECTURAL DECISIONS AT A GLANCE                      │
+│                        7 CORE ARCHITECTURAL DECISIONS AT A GLANCE                      │
 ├────────────────────────────┬─────────────────────────────┬─────────────────────────────┤
 │ Dimension                  │ Standard "Tutorial" Pattern │ Our Production Architecture │
 ├────────────────────────────┼─────────────────────────────┼─────────────────────────────┤
@@ -504,6 +629,7 @@ This section documents the foundational engineering decisions and tradeoffs behi
 │ 4. Evaluation Safety       │ Blind vector search         │ Dual-mode metadata filter   │
 │ 5. LLM Client Topology     │ Single shared ChatClient    │ 2 Decoupled ChatClients     │
 │ 6. Vector Persistence      │ Separate Vector DB cluster  │ In-database pgvector (HNSW) │
+│ 7. Query Surface           │ 2 Split Tools (Text/Meta)   │ 1 Unified Tool + 5 Guards   │
 └────────────────────────────┴─────────────────────────────┴─────────────────────────────┘
 ```
 
@@ -546,3 +672,12 @@ This section documents the foundational engineering decisions and tradeoffs behi
 * **The Tutorial Approach**: Spin up a separate Pinecone, Milvus, or Qdrant cluster for vectors.
 * **Why It Fails for Agents**: Operational complexity. Our agent already relies on PostgreSQL for the Evidence DB (`run`, `iteration`, `load_report`, `jfr_report`). Adding a separate vector database creates dual-write consistency problems and extra Docker overhead.
 * **The Production Choice**: **In-Database `pgvector` with HNSW Index**. By switching the Docker image to `pgvector/pgvector:pg17` and running a 10-line Flyway migration (`V3__vector_store.sql`), relational runs and vector embeddings live in the same bounded container, transactionally consistent and backup-ready.
+
+### Tradeoff 7: 1 Unified Hybrid Tool vs. 2 Separate Tools (Semantic + Metadata)
+* **The Tutorial Approach**: Create two distinct tools: `queryPastSymptoms(symptomText)` for semantic search, and `queryPastRunsByMetadata(category, template, outcome)` for SQL metadata filtering.
+* **Why It Fails for Agents**:
+  1. *Tool Choice Paralysis*: When faced with two overlapping tools, LLMs frequently get confused about which to call first. Looking for past GC fixes? The agent often calls both tools across 2 separate loop turns, burning double token budget and latency.
+  2. *Hybrid Blindness*: An agent cannot execute a compound query like *"Find past lock contention symptoms where the outcome was actually KEPT"*. The semantic tool lacks outcome filtering, and the metadata tool cannot match symptom semantics.
+* **The Production Choice**: **1 Unified Tool (`queryPastFindings`) with 5 Strict Metadata Guards**.
+  The LLM has one clear, intuitive tool that accepts any combination of semantic text and structured filters. Server-side validation handles enum whitelisting, eval-mode target isolation, unbounded scan prevention, and dynamic thresholding, eliminating hallucination risks while giving the model maximum diagnostic flexibility.
+
