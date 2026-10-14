@@ -10,9 +10,9 @@ Follows explicit failure modes, atomic documents, no silent swallows, and determ
 ### Goal
 Implement episodic vector memory for the autonomous diagnostic agent. Each historical iteration is vectorized as an atomic document containing the diagnostic symptom, proposal, outcome, and post-hoc finding, paired with rich metadata. The system supports two operational modes:
 1. **Eval / Benchmark Mode**: Enforces cross-target retrieval (`targetId != currentTargetId`) to prevent test-set answer leakage and scientifically measure general diagnostic transfer.
-2. **Production Mode**: Allows same-target retrieval (`targetId == currentTargetId`) to provide institutional repository memory, acting as guardrails so the agent never repeats past reverted mistakes or redundant merged fixes.
+2. **Production Mode**: Allows same-target retrieval (`targetId == currentTargetId`) to provide institutional repository memory, acting as evidence-based advisories (not rigid bans) so the agent avoids repeating known dead-ends while retaining full freedom to reason when mechanisms differ.
 
-### The Mental Model
+### The Mental Model 
 
 ```
  ┌────────────────────────────────────────────────────────────────────────┐
@@ -32,9 +32,11 @@ Implement episodic vector memory for the autonomous diagnostic agent. Each histo
  │          DiagnosticMemoryTool / DiagnosticMemoryRetriever              │
  │                                                                        │
  │  Mode 1 (Benchmark): targetId != currentTargetId (Zero Leakage)        │
- │  Mode 2 (Production): All targets allowed, with:                       │
- │                       - [GUARD]: Attempted & REVERTED (Do not repeat!) │
- │                       - [CONTEXT]: Attempted & KEPT (Already merged!)  │
+ │  Mode 2 (Production): All targets allowed, with Evidence Advisories:   │
+ │     - [CAUTION - Same Service]: Reverted earlier (discourage repeat)   │
+ │     - [OBSERVATION - Other Service]: Reverted on other repo (context)  │
+ │     - [BASELINE - Same Service]: Kept earlier (verify if active)       │
+ │     - [PROVEN PATTERN - Other Service]: Kept on other repo (precedent) │
  │  Diversity: Deduplicates by (targetId, template)                       │
  └─────────────────────────────────┬──────────────────────────────────────┘
                                    │
@@ -99,9 +101,12 @@ Vector text is kept clean and dense. All relational keys, filters, and numeric s
 #### Mode 2: Production Mode (`isEvaluationMode = false`)
 - **Rule**: All past runs accessible, including the current target.
 - **Filter**: `b.eq("embeddingModel", currentModel)`.
-- **Semantics**:
-  - `targetId == currentTargetId && outcome == KEPT`: The prompt explicitly warns the LLM that this fix is **already merged into the baseline**, instructing it to search for the next constraint.
-  - `targetId == currentTargetId && outcome == REVERTED`: The prompt explicitly warns the LLM that this proposal was **previously attempted and failed**, instructing it not to waste compute repeating it.
+- **Evidence-Based Advisory System (Non-Dogmatic)**:
+  Rather than rigid bans (`DO NOT RE-ATTEMPT`) that blind the model when identical symptoms stem from different root causes, the formatter applies a contextual 2x2 advisory matrix:
+  1. `targetId == currentTargetId && outcome == REVERTED`: Decorated with `[CAUTION - Same Service]` — warns that this proposal previously failed on this repo and provides the exact finding, strongly discouraging repetition unless the agent identifies clear evidence that conditions changed.
+  2. `targetId != currentTargetId && outcome == REVERTED`: Decorated with `[OBSERVATION - Other Service]` — notes that this proposal was reverted on another repo, reminding the model that different root causes may apply to its target.
+  3. `targetId == currentTargetId && outcome == KEPT`: Decorated with `[BASELINE - Same Service]` — notes that this fix was already merged into the current codebase's baseline, prompting the agent to verify if it is already active before re-proposing.
+  4. `targetId != currentTargetId && outcome == KEPT`: Decorated with `[PROVEN PATTERN - Other Service]` — highlights a proven optimization recipe that succeeded under similar symptoms on another service.
 
 ### D5: Deduplication & Diversity Constraint
 Nearest-neighbor vector search can return multiple iterations from the same target testing the same proposal.
@@ -112,7 +117,7 @@ Nearest-neighbor vector search can return multiple iterations from the same targ
 Rather than blindly stuffing past iterations into the prompt context on every single turn (passive RAG):
 * **On-Demand Search**: The LLM is provided with a dedicated tool (`queryPastFindings(symptomQuery)`).
 * **Targeted Inquiries**: The LLM formulates specific queries when it identifies suspect bottlenecks (e.g. `queryPastFindings("lock contention JarFile ClassLoader")` or `queryPastFindings("hikari connection pool exhaustion")`).
-* **Invisible Server-Side Guardrails**: The tool intercepts the LLM's query, enforces `isEvaluationMode` filtering, dedups results, and decorates matches with `[GUARD]` or `[CONTEXT]` before returning the envelope.
+* **Invisible Server-Side Guardrails**: The tool intercepts the LLM's query, enforces `isEvaluationMode` filtering, dedups results, and decorates matches with the appropriate evidence advisory tags before returning the envelope.
 
 ### D7: PostgreSQL (`pgvector`) Storage & Migration
 Episodic vectors live in the existing Evidence PostgreSQL database:
@@ -297,8 +302,12 @@ import java.util.List;
 
 public interface MemoryContextFormatter {
     /**
-     * Formats retrieved documents into the system prompt section, decorating
-     * same-target memories with operational guardrails (already merged / failed).
+     * Formats retrieved documents into the tool response text, decorating
+     * memories with context-aware evidence advisories:
+     * - [CAUTION - Same Service] (Reverted on current target: discourage repeat without hard censor)
+     * - [OBSERVATION - Other Service] (Reverted on different target: informative context)
+     * - [BASELINE - Same Service] (Kept on current target: verify if already active)
+     * - [PROVEN PATTERN - Other Service] (Kept on different target: high-confidence precedent)
      */
     String formatForPrompt(List<Document> memories, String currentTargetId);
 }
@@ -334,7 +343,7 @@ public ToolEnvelope<String> queryPastFindings(String symptomQuery) {
             return ToolEnvelope.ok("No matching past diagnostic runs found for: " + symptomQuery);
         }
 
-        // 2. Format with [GUARD] / [CONTEXT] tags
+        // 2. Format with non-dogmatic evidence advisory tags
         String formatted = memoryFormatter.formatForPrompt(memories, currentTargetId);
         return ToolEnvelope.ok(formatted);
     } catch (Exception e) {
@@ -385,30 +394,31 @@ services:
 
 ## Part 3 — Prompt Context Injection Format
 
-When injected into the `DecideTurn` prompt:
+When returned by `queryPastFindings` and formatted into the tool envelope:
 
 ```text
 === EPISODIC MEMORY (RELEVANT PAST EXPERIENCES) ===
 
-[Experience 1] (Cross-Target: practice-mvc-s4)
+[Experience 1] (PROVEN PATTERN - Cross-Target: practice-mvc-s4)
 - SYMPTOM: Load: 210 RPS, p95 1850ms. Hotspots: JavaMonitorEnter (CRITICAL, count=45200, frames=[PetClinicService.findOwners])
 - ACTION: Applied concurrency optimization on monitor.
 - OUTCOME: KEPT (RPS +62%, p95 -45%)
 - FINDING: Reducing synchronized block scope resolved thread parking cascade.
+[ADVISORY]: Succeeded on practice-mvc-s4 for similar lock symptoms. High-confidence candidate to investigate.
 
-[Experience 2] (SAME REPOSITORY: petclinic)
+[Experience 2] (CAUTION - Same Service: petclinic)
 - SYMPTOM: Load: 189 RPS, p95 2400ms. Hotspots: JavaMonitorEnter (CRITICAL, count=71738, frames=[JarFile.getBytes, URLClassPath.getLoader])
 - ACTION: hikari-pool-size=30
 - OUTCOME: REVERTED
 - FINDING: Pool increase did not relieve lock contention on classloader.
-[GUARD]: This exact change was attempted and REVERTED on this target before. DO NOT RE-ATTEMPT.
+[ADVISORY]: Attempted and REVERTED on this service earlier. Strongly discouraged unless you have clear evidence that the underlying mechanism differs.
 
-[Experience 3] (SAME REPOSITORY: petclinic)
+[Experience 3] (BASELINE - Same Service: petclinic)
 - SYMPTOM: Load: 189 RPS, p95 2400ms. Hotspots: JavaMonitorEnter (CRITICAL, count=71738, frames=[JarFile.getBytes, URLClassPath.getLoader])
 - ACTION: jar-unpack
 - OUTCOME: KEPT
 - FINDING: Unpacking jar eliminated 81% of lock contention events.
-[CONTEXT]: This fix was already KEPT and is part of your current baseline. Search for remaining bottlenecks.
+[ADVISORY]: This fix was already KEPT in an earlier run and is active in your baseline. Verify before proposing again.
 ```
 
 ---
@@ -446,10 +456,11 @@ When injected into the `DecideTurn` prompt:
 ### Milestone M3: Tool & Prompt Context Formatting Verification
 - **Test**: `MemoryContextFormatterTest` & `DiagnosticMemoryToolTest`
 - **Verifications**:
-  1. Same-target + `REVERTED` outputs `[GUARD]: ... DO NOT RE-ATTEMPT`.
-  2. Same-target + `KEPT` outputs `[CONTEXT]: ... already part of your current baseline`.
-  3. Cross-target memories output standard diagnostic context without guard/context tags.
-  4. Tool `queryPastFindings("lock contention")` successfully returns `ToolEnvelope.ok(...)` with formatted memory, or `ToolEnvelope.ok("No matching...")` when empty.
+  1. Same-target + `REVERTED` outputs `[CAUTION - Same Service]: ...` (discourages repetition with rationale, no blunt censorship).
+  2. Cross-target + `REVERTED` outputs `[OBSERVATION - Other Service]: ...` (contextual warning, root causes may differ).
+  3. Same-target + `KEPT` outputs `[BASELINE - Same Service]: ...` (prompts verification of current active baseline).
+  4. Cross-target + `KEPT` outputs `[PROVEN PATTERN - Other Service]: ...` (proven recipe under similar symptoms).
+  5. Tool `queryPastFindings("lock contention")` successfully returns `ToolEnvelope.ok(...)` with formatted memory, or `ToolEnvelope.ok("No matching...")` when empty.
 
 ### Milestone M4: Deterministic Loop Verification Gate (`Step13VerifyGate`)
 Adheres to the project's TigerStyle gate pattern (mirrors `Step9VerifyGate`): **100% offline, deterministic, zero API token cost**.
@@ -457,10 +468,10 @@ Adheres to the project's TigerStyle gate pattern (mirrors `Step9VerifyGate`): **
 - **Gate**: `Step13VerifyGate.java`
 - **Verifications**:
   1. **Ingestion Trigger Test**: Run 1 iteration of `AgentLoop`. Assert `IterationIndexer.index(...)` is called immediately after `KeepRule` evaluates `KEPT` or `REVERTED`, writing exactly 1 document to the store. Assert `WASTED` iterations are skipped.
-  2. **Tool Execution & Safety Test**: Invoke `queryPastFindings` through `BoundedReadSource`. Assert output envelope contains verified `[GUARD]` string and respect for `isEvaluationMode`.
+  2. **Tool Execution & Safety Test**: Invoke `queryPastFindings` through `BoundedReadSource`. Assert output envelope contains verified advisory string and respect for `isEvaluationMode`.
   3. **Fail-Open Resilience Test**: Inject an artificial `VectorStoreException` / embedding timeout into `VectorStore`. Assert `queryPastFindings` returns `ToolEnvelope.fail(...)` and `AgentLoop` completes its decide turn gracefully without throwing exceptions.
 
-> **Optional Real-Run Gate (`Step13RealRunGate`)**: Tagged with `@Tag("real-run")` (requires live API key). Asserts that an actual frontier LLM avoids a guarded template and generalizes from cross-target memory. Kept separate from the deterministic build gate so flaky model days never break CI.
+> **Optional Real-Run Gate (`Step13RealRunGate`)**: Tagged with `@Tag("real-run")` (requires live API key). Asserts that an actual frontier LLM reasons over the advisory tags and generalizes from cross-target memory. Kept separate from the deterministic build gate so flaky model days never break CI.
 
 ---
 
@@ -513,14 +524,16 @@ This section documents the foundational engineering decisions and tradeoffs behi
 * **Why It Fails for Agents**: `DocumentRetriever` is **read-only** (`retrieve(Query)`). An agentic system has a dual lifecycle: it must *write* completed iterations (`add`) and *read* prior experiences (`similaritySearch`). Using `DocumentRetriever` forces you to inject both interfaces anyway.
 * **The Production Choice**: **Operate directly over `VectorStore`**. Following `TIGERSTYLE.md` (*"Simplicity over cleverness, no magic pipelines"*), we use `vectorStore.similaritySearch(SearchRequest)` directly. It provides fluent dynamic filtering (`FilterExpressionBuilder`), eliminates wrapper ceremony, and simplifies unit tests to 2-line mocks.
 
-### Tradeoff 4: Dual-Mode Isolation (Benchmark Data Leakage vs. Production Repository Memory)
+### Tradeoff 4: Dual-Mode Isolation & Non-Dogmatic Advisories (The Over-Constrained Agent Trap)
 * **The Problem**: If an agent is benchmarked on Target `S1` and retrieves past runs from Target `S1`, it simply looks up the answer key. This is **train/test contamination (data leakage)**—the benchmark becomes an illusion.
-* **The Catch**: In a real production system, retrieving past runs on the *same repository* from 3 months ago is **not leakage—it is valuable institutional memory!**
-* **The Production Choice**: **Dual-Mode Metadata Filtering**:
+* **The Dogmatic Trap**: Saying `[GUARD]: DO NOT RE-ATTEMPT` turns memory into a blunt censor. A change that was reverted on Target A because the root cause was elsewhere (e.g. tuning DB pool during classloader contention) might be the *exact* solution needed on Target B!
+* **The Production Choice**: **Dual-Mode Metadata Filtering with 2x2 Evidence Advisories**:
   * *Mode 1 (Benchmark / Eval)*: Enforces `b.ne("targetId", currentTargetId)`. Forces the agent to prove cross-target generalization.
-  * *Mode 2 (Production Continuous)*: Allows same-target matches, but decorates them as actionable behavioral guardrails:
-    * `outcome == REVERTED` $\to$ `[GUARD]: Attempted and REVERTED before. DO NOT RE-ATTEMPT.`
-    * `outcome == KEPT` $\to$ `[CONTEXT]: Already KEPT in past run. Part of your current baseline.`
+  * *Mode 2 (Production Continuous)*: Allows same-target matches, but replaces rigid bans with contextual Bayesian evidence:
+    * Same Target + `REVERTED` $\to$ `[CAUTION - Same Service]` (discourages repetition with rationale, avoids blunt censorship).
+    * Cross Target + `REVERTED` $\to$ `[OBSERVATION - Other Service]` (contextual warning, root causes may differ).
+    * Same Target + `KEPT` $\to$ `[BASELINE - Same Service]` (already in baseline, check before re-proposing).
+    * Cross Target + `KEPT` $\to$ `[PROVEN PATTERN - Other Service]` (high-confidence recipe under similar symptoms).
 
 ### Tradeoff 5: 2 `ChatClient` Decoupling (The Diagnostician vs. The Vector Subsystem)
 * **The Tutorial Approach**: Route all completions and embeddings through one monolithic client configuration.
