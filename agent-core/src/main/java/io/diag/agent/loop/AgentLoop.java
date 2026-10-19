@@ -2,6 +2,7 @@ package io.diag.agent.loop;
 
 import io.diag.agent.config.GenParams;
 import io.diag.agent.decision.DecisionDto;
+import io.diag.agent.memory.IterationIndexer;
 import io.diag.evidence.RunStatus;
 import io.diag.evidence.dto.BaselineReportsDto;
 import io.diag.evidence.dto.FilesTouchedDto;
@@ -37,33 +38,37 @@ public final class AgentLoop {
     private static final double LEDGER_STEP = 0.2;
 
     private final EvidenceService evidenceService;
-    private final ChangeApplier   changeApplier;
-    private final DecideTurn      decideTurn;
-    private final TargetPipeline  targetPipeline;
-    private final LoopConfig      loopConfig;
-    private final GenParams       genParams;
-    private final Path            targetRepo;
-    private final String          targetId;
+    private final ChangeApplier changeApplier;
+    private final DecideTurn decideTurn;
+    private final TargetPipeline targetPipeline;
+    private final LoopConfig loopConfig;
+    private final GenParams genParams;
+    private final Path targetRepo;
+    private final String targetId;
 
     // run-scoped mutable state — reset by initRunState()
-    private String              runId;
-    private String              lastKeptSha;
-    private Baseline            baseline;
-    private final Map<String, Double> ledger  = new LinkedHashMap<>();
-    private final List<HistoryEntry>  history = new ArrayList<>();
-    private JfrReportDto        lastKeptJfr;
-    private long                tokensIn;
-    private long                tokensOut;
-    private BigDecimal          costUsd;
-    private Instant             startWall;
+    private String runId;
+    private String lastKeptSha;
+    private Baseline baseline;
+    private final Map<String, Double> ledger = new LinkedHashMap<>();
+    private final List<HistoryEntry> history = new ArrayList<>();
+    private JfrReportDto lastKeptJfr;
+    private long tokensIn;
+    private long tokensOut;
+    private BigDecimal costUsd;
+    private Instant startWall;
     private final BaselineCache baselineCache;
+
+    private final IterationIndexer iterationIndexer;
+
+    private Run run;
 
     public AgentLoop(EvidenceService evidenceService, ChangeApplier changeApplier,
                      DecideTurn decideTurn, TargetPipeline targetPipeline,
                      LoopConfig loopConfig, GenParams genParams,
                      Path targetRepo, String targetId) {
         this(evidenceService, changeApplier, decideTurn, targetPipeline,
-                loopConfig, genParams, targetRepo, targetId, null);
+                loopConfig, genParams, targetRepo, targetId, null, null);
     }
 
     public AgentLoop(EvidenceService evidenceService, ChangeApplier changeApplier,
@@ -71,15 +76,33 @@ public final class AgentLoop {
                      LoopConfig loopConfig, GenParams genParams,
                      Path targetRepo, String targetId,
                      BaselineCache baselineCache) {
+        this(evidenceService, changeApplier, decideTurn, targetPipeline,
+                loopConfig, genParams, targetRepo, targetId, baselineCache, null);
+    }
+
+    public AgentLoop(EvidenceService evidenceService, ChangeApplier changeApplier,
+                     DecideTurn decideTurn, TargetPipeline targetPipeline,
+                     LoopConfig loopConfig, GenParams genParams,
+                     Path targetRepo, String targetId, IterationIndexer iterationIndexer) {
+        this(evidenceService, changeApplier, decideTurn, targetPipeline,
+                loopConfig, genParams, targetRepo, targetId, null, iterationIndexer);
+    }
+
+    public AgentLoop(EvidenceService evidenceService, ChangeApplier changeApplier,
+                     DecideTurn decideTurn, TargetPipeline targetPipeline,
+                     LoopConfig loopConfig, GenParams genParams,
+                     Path targetRepo, String targetId,
+                     BaselineCache baselineCache, IterationIndexer iterationIndexer) {
         this.evidenceService = Objects.requireNonNull(evidenceService, "evidenceService");
-        this.changeApplier   = Objects.requireNonNull(changeApplier,   "changeApplier");
-        this.decideTurn      = Objects.requireNonNull(decideTurn,      "decideTurn");
-        this.targetPipeline  = Objects.requireNonNull(targetPipeline,  "targetPipeline");
-        this.loopConfig      = Objects.requireNonNull(loopConfig,      "loopConfig");
-        this.genParams       = Objects.requireNonNull(genParams,       "genParams");
-        this.targetRepo      = Objects.requireNonNull(targetRepo,      "targetRepo");
-        this.targetId        = Objects.requireNonNull(targetId,        "targetId");
-        this.baselineCache   = baselineCache;
+        this.changeApplier = Objects.requireNonNull(changeApplier, "changeApplier");
+        this.decideTurn = Objects.requireNonNull(decideTurn, "decideTurn");
+        this.targetPipeline = Objects.requireNonNull(targetPipeline, "targetPipeline");
+        this.loopConfig = Objects.requireNonNull(loopConfig, "loopConfig");
+        this.genParams = Objects.requireNonNull(genParams, "genParams");
+        this.targetRepo = Objects.requireNonNull(targetRepo, "targetRepo");
+        this.targetId = Objects.requireNonNull(targetId, "targetId");
+        this.baselineCache = baselineCache;
+        this.iterationIndexer = iterationIndexer;
     }
 
     // -------------------------------------------------------------------------
@@ -94,7 +117,8 @@ public final class AgentLoop {
                 genParams.provider(), genParams.model(),
                 SystemPrompts.promptHash(), "1.0",
                 genParams.toMap());
-        runId       = run.getId();
+        this.run = run;
+        runId = run.getId();
         lastKeptSha = originSha;
         return runLoop(originSha);
     }
@@ -109,7 +133,8 @@ public final class AgentLoop {
     public String start(String preCreatedRunId) throws Exception {
         Objects.requireNonNull(preCreatedRunId, "preCreatedRunId must not be null");
         initRunState();
-        runId       = preCreatedRunId;
+        runId = preCreatedRunId;
+        this.run = evidenceService.findRun(preCreatedRunId).orElse(null);
         String originSha = changeApplier.currentSha(targetRepo);
         lastKeptSha = originSha;
         return runLoop(originSha);
@@ -138,6 +163,7 @@ public final class AgentLoop {
 
         Run run = evidenceService.findRun(resumeRunId)
                 .orElseThrow(() -> new IllegalArgumentException("run not found: " + resumeRunId));
+        this.run = run;
 
         boolean resumeAborted = "true".equalsIgnoreCase(System.getenv("DIAG_RESUME_ABORTED"));
         boolean statusOk = RunStatus.RUNNING.name().equals(run.getStatus())
@@ -314,7 +340,7 @@ public final class AgentLoop {
                 b3Jfr = cycle.jfr();
             }
         }
-        baseline    = Baseline.of(loads);
+        baseline = Baseline.of(loads);
         lastKeptJfr = b3Jfr;
         NoiseFloors f = baseline.floors();
         evidenceService.recordBaseline(runId,
@@ -390,9 +416,9 @@ public final class AgentLoop {
                 List.copyOf(history));
 
         DecideTurn.DecideResult result = decideTurn.decide(n, ctx);
-        tokensIn  += result.tokensIn();
+        tokensIn += result.tokensIn();
         tokensOut += result.tokensOut();
-        costUsd    = costUsd.add(computeCost(result.tokensIn(), result.tokensOut()));
+        costUsd = costUsd.add(computeCost(result.tokensIn(), result.tokensOut()));
 
         if (result.infraFailure()) {
             log.warn("LLM infra failure at iteration {}: {}", n, result.error());
@@ -410,8 +436,8 @@ public final class AgentLoop {
         }
 
         // update ledger: fixed ±0.2 step clamped to [0.0, 1.0]
-        String cat     = result.decision().ledger().category();
-        String dir     = result.decision().ledger().direction();
+        String cat = result.decision().ledger().category();
+        String dir = result.decision().ledger().direction();
         double current = ledger.getOrDefault(cat, 0.0);
         double updated = "strengthen".equals(dir)
                 ? Math.min(1.0, current + LEDGER_STEP)
@@ -497,32 +523,28 @@ public final class AgentLoop {
                         ? changeResult.filesTouched().files()
                         : List.of();
 
+        Iteration iteration = evidenceService.createIteration(runId, n, dec.hypothesis(),
+                Map.copyOf(ledger), dec.change(),
+                kd.keep() ? "KEPT" : "REVERTED", lastKeptSha,
+                cycle.loadReportId(), cycle.jfrReportId(),
+                files, kd.keepType(), finding);
+        if (iterationIndexer != null) {
+            iterationIndexer.index(iteration, run, cycle.load(), cycle.jfr());
+        }
+
+        history.add(new HistoryEntry(n,
+                dec.hypothesis().category(), dec.hypothesis().confidence(),
+                dec.change().kind(), kd.keep() ? "KEPT" : "REVERTED", null,
+                cycle.load().rps(), cycle.load().latency().p95(), finding));
+
         if (kd.keep()) {
             lastKeptSha = changeResult.commitSha();
             // reference advances on keep; floors do NOT recompute (§6)
-            baseline    = new Baseline(cycle.load(), baseline.floors());
+            baseline = new Baseline(cycle.load(), baseline.floors());
             lastKeptJfr = cycle.jfr();
             evidenceService.recordKeptSha(runId, lastKeptSha);
-            evidenceService.createIteration(runId, n, dec.hypothesis(),
-                    Map.copyOf(ledger), dec.change(),
-                    "KEPT", lastKeptSha,
-                    cycle.loadReportId(), cycle.jfrReportId(),
-                    files, kd.keepType(), finding);
-            history.add(new HistoryEntry(n,
-                    dec.hypothesis().category(), dec.hypothesis().confidence(),
-                    dec.change().kind(), "KEPT", kd.keepType(),
-                    cycle.load().rps(), cycle.load().latency().p95(), finding));
         } else {
             changeApplier.revertTo(targetRepo, lastKeptSha);
-            evidenceService.createIteration(runId, n, dec.hypothesis(),
-                    Map.copyOf(ledger), dec.change(),
-                    "REVERTED", lastKeptSha,
-                    cycle.loadReportId(), cycle.jfrReportId(),
-                    files, null, finding);
-            history.add(new HistoryEntry(n,
-                    dec.hypothesis().category(), dec.hypothesis().confidence(),
-                    dec.change().kind(), "REVERTED", null,
-                    cycle.load().rps(), cycle.load().latency().p95(), finding));
         }
     }
 
@@ -587,14 +609,14 @@ public final class AgentLoop {
     // -------------------------------------------------------------------------
 
     private void initRunState() {
-        runId       = null;
+        runId = null;
         lastKeptSha = null;
-        baseline    = null;
+        baseline = null;
         lastKeptJfr = null;
-        tokensIn    = 0L;
-        tokensOut   = 0L;
-        costUsd     = BigDecimal.ZERO;
-        startWall   = Instant.now();
+        tokensIn = 0L;
+        tokensOut = 0L;
+        costUsd = BigDecimal.ZERO;
+        startWall = Instant.now();
         ledger.clear();
         history.clear();
         for (int i = 1; i <= 7; i++) ledger.put("H" + i, 0.0);
@@ -624,7 +646,7 @@ public final class AgentLoop {
                 && loopConfig.priceOutPerMtok().compareTo(BigDecimal.ZERO) == 0) {
             return BigDecimal.ZERO;
         }
-        BigDecimal inCost  = loopConfig.priceInPerMtok()
+        BigDecimal inCost = loopConfig.priceInPerMtok()
                 .multiply(BigDecimal.valueOf(in))
                 .divide(BigDecimal.valueOf(1_000_000), 10, RoundingMode.HALF_UP);
         BigDecimal outCost = loopConfig.priceOutPerMtok()
@@ -636,7 +658,7 @@ public final class AgentLoop {
     private String buildFinding(DecisionDto dec, LoadReportDto ref,
                                 BenchmarkCycle cycle, KeepDecision kd) {
         String signal = dec.prediction().mechanismSignalToEliminate();
-        long prevCount   = 0;
+        long prevCount = 0;
         long resultCount = 0;
         if (lastKeptJfr != null && lastKeptJfr.signals() != null
                 && lastKeptJfr.signals().containsKey(signal)) {
@@ -646,10 +668,10 @@ public final class AgentLoop {
             resultCount = cycle.jfr().signals().get(signal).count();
         }
         double signalPct = prevCount > 0 ? (100.0 * (resultCount - prevCount) / prevCount) : 0.0;
-        double rpsDelta  = cycle.load().rps() - ref.rps();
-        double p95Delta  = cycle.load().latency().p95() - ref.latency().p95();
-        double rpsPct    = ref.rps() > 0 ? (100.0 * rpsDelta / ref.rps()) : 0.0;
-        double p95Pct    = ref.latency().p95() > 0 ? (100.0 * p95Delta / ref.latency().p95()) : 0.0;
+        double rpsDelta = cycle.load().rps() - ref.rps();
+        double p95Delta = cycle.load().latency().p95() - ref.latency().p95();
+        double rpsPct = ref.rps() > 0 ? (100.0 * rpsDelta / ref.rps()) : 0.0;
+        double p95Pct = ref.latency().p95() > 0 ? (100.0 * p95Delta / ref.latency().p95()) : 0.0;
         return String.format("%s %d\u2192%d (%+.0f%%); rps %.0f\u2192%.0f (%+.0f%%); p95 %.0f\u2192%.0f (%+.0f%%); keep=%s",
                 signal, prevCount, resultCount, signalPct,
                 ref.rps(), cycle.load().rps(), rpsPct,
@@ -662,10 +684,14 @@ public final class AgentLoop {
     // -------------------------------------------------------------------------
 
     static final class InfraFailureException extends RuntimeException {
-        InfraFailureException(String message) { super(message); }
+        InfraFailureException(String message) {
+            super(message);
+        }
     }
 
     static final class GuardrailAbortedException extends RuntimeException {
-        GuardrailAbortedException(String message) { super(message); }
+        GuardrailAbortedException(String message) {
+            super(message);
+        }
     }
 }

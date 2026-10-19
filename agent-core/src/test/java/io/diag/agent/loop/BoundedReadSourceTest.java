@@ -37,7 +37,9 @@ class BoundedReadSourceTest {
     // -------------------------------------------------------------------------
 
     static class FakeEvidenceService implements EvidenceService {
-        record Event(String runId, String kind, Map<String, Object> payload) {}
+        record Event(String runId, String kind, Map<String, Object> payload) {
+        }
+
         final List<Event> events = new ArrayList<>();
 
         @Override
@@ -50,20 +52,44 @@ class BoundedReadSourceTest {
         }
 
         // Unused stubs
-        @Override public Run createRun(String t, String p, String m, String h, String a, Map<String,Object> g) { return null; }
-        @Override public void transitionRunStatus(String r, RunStatus b, RunStatus a) {}
-        @Override public LoadReport createLoadReport(String r, String l, LoadReportDto d, Path f) { return null; }
-        @Override public JfrReport createJfrReport(String r, String l, JfrReportDto d, Path f) { return null; }
-        @Override public Iteration createIteration(String r, int n, HypothesisDto h, Map<String,Object> le,
-                                                   ChangeDto c, String o, String t, Long lr, Long jr,
-                                                   List<FilesTouchedDto> ft, String kt, String fi) { return null; }
-        @Override public void recordBaseline(String r, double p95, double p95f, double rps, double rpsf, String sha) {}
-        @Override public void recordKeptSha(String r, String sha) {}
+        @Override
+        public Run createRun(String t, String p, String m, String h, String a, Map<String, Object> g) {
+            return null;
+        }
+
+        @Override
+        public void transitionRunStatus(String r, RunStatus b, RunStatus a) {
+        }
+
+        @Override
+        public LoadReport createLoadReport(String r, String l, LoadReportDto d, Path f) {
+            return null;
+        }
+
+        @Override
+        public JfrReport createJfrReport(String r, String l, JfrReportDto d, Path f) {
+            return null;
+        }
+
+        @Override
+        public Iteration createIteration(String r, int n, HypothesisDto h, Map<String, Object> le,
+                                         ChangeDto c, String o, String t, Long lr, Long jr,
+                                         List<FilesTouchedDto> ft, String kt, String fi) {
+            return null;
+        }
+
+        @Override
+        public void recordBaseline(String r, double p95, double p95f, double rps, double rpsf, String sha) {
+        }
+
+        @Override
+        public void recordKeptSha(String r, String sha) {
+        }
     }
 
     private DiagnosticTools tools() {
         // null for unused deps — DiagnosticTools.readSource only needs targetRoot
-        return new DiagnosticTools(null, null, null, null, tempDir);
+        return new DiagnosticTools(null, null, null, null, tempDir, null, null, null, null);
     }
 
     // -------------------------------------------------------------------------

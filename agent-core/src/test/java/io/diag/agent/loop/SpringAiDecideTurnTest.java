@@ -49,7 +49,9 @@ class SpringAiDecideTurnTest {
     // -------------------------------------------------------------------------
 
     static class RecordingEvidenceService implements EvidenceService {
-        record Event(String kind) {}
+        record Event(String kind) {
+        }
+
         final List<Event> events = new ArrayList<>();
         final List<Long> tokensInLog = new ArrayList<>();
         final List<BigDecimal> costLog = new ArrayList<>();
@@ -65,15 +67,39 @@ class SpringAiDecideTurnTest {
             return null;
         }
 
-        @Override public Run createRun(String t, String p, String m, String h, String a, Map<String,Object> g) { return null; }
-        @Override public void transitionRunStatus(String r, RunStatus b, RunStatus a) {}
-        @Override public LoadReport createLoadReport(String r, String l, LoadReportDto d, Path f) { return null; }
-        @Override public JfrReport createJfrReport(String r, String l, JfrReportDto d, Path f) { return null; }
-        @Override public Iteration createIteration(String r, int n, HypothesisDto h, Map<String,Object> le,
-                                                   ChangeDto c, String o, String t, Long lr, Long jr,
-                                                   List<FilesTouchedDto> ft, String kt, String fi) { return null; }
-        @Override public void recordBaseline(String r, double p95, double p95f, double rps, double rpsf, String sha) {}
-        @Override public void recordKeptSha(String r, String sha) {}
+        @Override
+        public Run createRun(String t, String p, String m, String h, String a, Map<String, Object> g) {
+            return null;
+        }
+
+        @Override
+        public void transitionRunStatus(String r, RunStatus b, RunStatus a) {
+        }
+
+        @Override
+        public LoadReport createLoadReport(String r, String l, LoadReportDto d, Path f) {
+            return null;
+        }
+
+        @Override
+        public JfrReport createJfrReport(String r, String l, JfrReportDto d, Path f) {
+            return null;
+        }
+
+        @Override
+        public Iteration createIteration(String r, int n, HypothesisDto h, Map<String, Object> le,
+                                         ChangeDto c, String o, String t, Long lr, Long jr,
+                                         List<FilesTouchedDto> ft, String kt, String fi) {
+            return null;
+        }
+
+        @Override
+        public void recordBaseline(String r, double p95, double p95f, double rps, double rpsf, String sha) {
+        }
+
+        @Override
+        public void recordKeptSha(String r, String sha) {
+        }
     }
 
     private FakeChatPort chatPort;
@@ -86,13 +112,14 @@ class SpringAiDecideTurnTest {
         chatPort = new FakeChatPort();
         svc = new RecordingEvidenceService();
         ObjectMapper mapper = new ObjectMapper();
-        DiagnosticTools tools = new DiagnosticTools(null, null, null, null, tempDir);
+        DiagnosticTools tools = new DiagnosticTools(null, null, null, null, tempDir, null, null, null, null);
         DecisionValidator validator = new DecisionValidator(mapper,
                 jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator());
         LoopConfig config = LoopConfig.defaults();
 
         // No-op sleeper — tests run at zero delay
-        SpringAiDecideTurn.Sleeper noSleep = ms -> {};
+        SpringAiDecideTurn.Sleeper noSleep = ms -> {
+        };
 
         turn = new SpringAiDecideTurn(chatPort, validator, tools, config, mapper, svc, "run-1", noSleep);
         ctx = buildContext();
@@ -216,11 +243,12 @@ class SpringAiDecideTurnTest {
                 new BigDecimal("15.00")   // $15 per Mtok out
         );
         ObjectMapper mapper = new ObjectMapper();
-        DiagnosticTools tools = new DiagnosticTools(null, null, null, null, tempDir);
+        DiagnosticTools tools = new DiagnosticTools(null, null, null, null, tempDir, null, null, null, null);
         DecisionValidator validator = new DecisionValidator(mapper,
                 jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator());
         SpringAiDecideTurn pricedTurn = new SpringAiDecideTurn(
-                chatPort, validator, tools, pricedConfig, mapper, svc, "run-1", ms -> {});
+                chatPort, validator, tools, pricedConfig, mapper, svc, "run-1", ms -> {
+        });
 
         // 1,000,000 in ($3.00) + 1,000,000 out ($15.00) = $18.00
         chatPort.enqueue(VALID_JSON, 1_000_000, 1_000_000);
@@ -247,7 +275,7 @@ class SpringAiDecideTurnTest {
         };
 
         ObjectMapper mapper = new ObjectMapper();
-        DiagnosticTools tools = new DiagnosticTools(null, null, null, null, tempDir);
+        DiagnosticTools tools = new DiagnosticTools(null, null, null, null, tempDir, null, null, null, null);
         DecisionValidator validator = new DecisionValidator(mapper,
                 jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator());
         SpringAiDecideTurn turnWithInterrupt = new SpringAiDecideTurn(

@@ -4,7 +4,9 @@ import io.diag.agent.ToolEnvelope;
 import io.diag.agent.tools.DiagnosticTools;
 import io.diag.evidence.service.EvidenceService;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -158,6 +160,59 @@ public class BoundedReadSource {
             resultPayload = Map.of("ok", false, "error", result.error());
         }
         trajectory.createTrajectoryEvent(runId, "TOOL_RESULT", resultPayload, null, null, null);
+
+        return result;
+    }
+
+    @Tool(description = """
+            Search episodic memory of past diagnostic runs across services for similar symptoms, bottlenecks, or fixes.
+            Supports semantic search, structured metadata filtering, or hybrid search.
+            At least one parameter must be provided.
+            Returns past attempted actions, whether they were KEPT or REVERTED, and key findings.
+            """)
+    public ToolEnvelope<String> queryPastFindings(
+            @ToolParam(description = "Suspect symptom, bottleneck, or mechanism (e.g. 'lock contention on classloader' or 'Hikari connection pool timeout')", required = false)
+            String symptomQuery,
+            @ToolParam(description = "Diagnostic hypothesis category: H1 (CPU), H2 (IO/Pool), H3 (GC/Alloc), H4 (Lock/Sync), H5 (Classload), H6 (Config), H7 (Custom)", required = false)
+            String category,
+            @ToolParam(description = "Action template name (e.g. 'hikari-pool-size', 'jar-unpack', 'jvm-opts')", required = false)
+            String template,
+            @ToolParam(description = "Outcome filter: 'KEPT' (only successful fixes) or 'REVERTED' (failed attempts)", required = false)
+            String outcome
+    ) {
+        callCount++;
+
+        String callMsg = String.format("queryPastFindings(symptom=%s, category=%s, template=%s, outcome=%s) [call %d/%d]",
+                symptomQuery, category, template, outcome, callCount, bound);
+        LlmDebugLogger.log(runId, "TOOL CALL", callMsg);
+
+        Map<String, Object> callPayload = new LinkedHashMap<>();
+        callPayload.put("action", "queryPastFindings");
+        if (symptomQuery != null) callPayload.put("symptomQuery", symptomQuery);
+        if (category != null) callPayload.put("category", category);
+        if (template != null) callPayload.put("template", template);
+        if (outcome != null) callPayload.put("outcome", outcome);
+        trajectory.createTrajectoryEvent(runId, "TOOL_CALL", callPayload, null, null, null);
+
+        if (callCount > bound) {
+            String msg = "tool-call bound (" + bound + ") exceeded — decide now";
+            LlmDebugLogger.log(runId, "TOOL RESULT", msg);
+            trajectory.createTrajectoryEvent(runId, "TOOL_RESULT",
+                    Map.of("ok", false, "error", msg), null, null, null);
+            return ToolEnvelope.fail(msg);
+        }
+
+        ToolEnvelope<String> result = tools.queryPastFindings(symptomQuery, category, template, outcome);
+
+        if (result.ok()) {
+            LlmDebugLogger.log(runId, "TOOL RESULT", "queryPastFindings() -> OK (" + result.data().length() + " chars)");
+            trajectory.createTrajectoryEvent(runId, "TOOL_RESULT",
+                    Map.of("ok", true, "bytes", result.data().length()), null, null, null);
+        } else {
+            LlmDebugLogger.log(runId, "TOOL RESULT", "queryPastFindings() -> FAIL: " + result.error());
+            trajectory.createTrajectoryEvent(runId, "TOOL_RESULT",
+                    Map.of("ok", false, "error", result.error()), null, null, null);
+        }
 
         return result;
     }

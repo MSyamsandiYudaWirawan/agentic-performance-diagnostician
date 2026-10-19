@@ -165,7 +165,7 @@ public class Step9RealRunGate {
                     new JfrCapture(targetStack, evidenceService, runId),
                     jfrAnalyzer,
                     changeApplier,
-                    TARGET_REPO);
+                    TARGET_REPO, null,null,null,null);
 
             LoopConfig loopConfig = LoopConfig.fromEnv();
             SpringAiDecideTurn decideTurn = new SpringAiDecideTurn(

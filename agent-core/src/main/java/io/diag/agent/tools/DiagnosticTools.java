@@ -1,21 +1,21 @@
 package io.diag.agent.tools;
 
 import io.diag.agent.ToolEnvelope;
+import io.diag.agent.memory.DiagnosticMemoryRetriever;
+import io.diag.agent.memory.MemoryConfig;
+import io.diag.agent.memory.MemoryContextFormatter;
+import io.diag.agent.memory.MemoryQuery;
 import io.diag.evidence.dto.ChangeDto;
 import io.diag.evidence.dto.JfrReportDto;
 import io.diag.evidence.dto.LoadReportDto;
 import io.diag.evidence.entity.JfrReport;
 import io.diag.runner.config.ChangeResult;
-import io.diag.runner.service.BenchmarkRunner;
-import io.diag.runner.service.ChangeApplier;
-import io.diag.runner.service.JfrAnalyzer;
-import io.diag.runner.service.JfrCapture;
-import io.diag.runner.service.TemplateNotAdmittedException;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.stereotype.Component;
-
+import io.diag.runner.service.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -25,15 +25,15 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * The four tools (§4.1, §10.1): thin adapters over runner services.
  * Every tool returns ToolEnvelope — the model always gets parseable JSON (§10.4).
- *
+ * <p>
  * Boundary: applyChange applies + commits only.
  * Rebuild → smoke → benchmark is loop orchestration (§4.2), not the tool.
  */
-@Component
 public class DiagnosticTools {
 
     private static final Logger log = LoggerFactory.getLogger(DiagnosticTools.class);
@@ -46,6 +46,10 @@ public class DiagnosticTools {
     private final JfrAnalyzer jfrAnalyzer;
     private final ChangeApplier changeApplier;
     private final Path targetRoot;
+    private final String currentTargetId;
+    private final MemoryConfig memoryConfig;
+    private final DiagnosticMemoryRetriever memoryRetriever;
+    private final MemoryContextFormatter memoryFormatter;
 
     // previous JfrReportDto for diff — §10.32: loop sets this to the current kept state's
     // most recent recording before each iteration. Step 9 wires this; step 8 exposes the setter.
@@ -56,11 +60,23 @@ public class DiagnosticTools {
                            JfrAnalyzer jfrAnalyzer,
                            ChangeApplier changeApplier,
                            Path targetRoot) {
+        this(benchmarkRunner, jfrCapture, jfrAnalyzer, changeApplier, targetRoot, "test-target", null, null, null);
+    }
+
+    public DiagnosticTools(BenchmarkRunner benchmarkRunner,
+                           JfrCapture jfrCapture,
+                           JfrAnalyzer jfrAnalyzer,
+                           ChangeApplier changeApplier,
+                           Path targetRoot, String currentTargetId, MemoryConfig memoryConfig, DiagnosticMemoryRetriever memoryRetriever, MemoryContextFormatter memoryContextFormatter) {
         this.benchmarkRunner = benchmarkRunner;
         this.jfrCapture = jfrCapture;
         this.jfrAnalyzer = jfrAnalyzer;
         this.changeApplier = changeApplier;
         this.targetRoot = targetRoot;
+        this.currentTargetId = currentTargetId;
+        this.memoryConfig = memoryConfig;
+        this.memoryRetriever = memoryRetriever;
+        this.memoryFormatter = memoryContextFormatter;
     }
 
     public Path getTargetRoot() {
@@ -129,7 +145,7 @@ public class DiagnosticTools {
 
     // -------------------------------------------------------------------------
 
-    @Tool(description  = """
+    @Tool(description = """
             Run a k6 benchmark against the target service and return a LoadReport.
             Returns ok=true with the report even when thresholds are breached (verdict=FAIL)
             or the smoke gate fails (verdict=NOT_TESTABLE) — those are data, not errors.
@@ -146,7 +162,7 @@ public class DiagnosticTools {
         }
     }
 
-    @Tool(description  = """
+    @Tool(description = """
             Stop the target container (flushing JFR dumponexit), harvest the recording,
             and return a JfrReport with per-signal aggregates (count, p50/p95/p99, severity,
             top-N classes/frames) plus a diff vs the previous kept-state recording.
@@ -167,7 +183,7 @@ public class DiagnosticTools {
         }
     }
 
-    @Tool(description  = """
+    @Tool(description = """
             Read a source file from the target repository. Path must be relative to the
             target root (e.g. src/main/java/Foo.java or Dockerfile.target).
             Returns ok=false if the path escapes the target root, is a symlink out,
@@ -191,7 +207,7 @@ public class DiagnosticTools {
         }
     }
 
-    @Tool(description  = """
+    @Tool(description = """
             Apply a change to the target repository and commit it.
             Two forms:
               kind=edits: [{path, content}] — full-file replacement, no deletions, 400-line cap per file.
@@ -246,4 +262,73 @@ public class DiagnosticTools {
         }
         return resolved;
     }
+
+    @Tool(description = """
+            Search episodic memory of past diagnostic runs across services for similar symptoms, bottlenecks, or fixes.
+            Supports semantic search, structured metadata filtering, or hybrid search.
+            At least one parameter must be provided.
+            Returns past attempted actions, whether they were KEPT or REVERTED, and key findings.
+            """)
+    public ToolEnvelope<String> queryPastFindings(
+            @ToolParam(description = "Suspect symptom, bottleneck, or mechanism (e.g. 'lock contention on classloader' or 'Hikari connection pool timeout')", required = false)
+            String symptomQuery,
+            @ToolParam(description = "Diagnostic hypothesis category: H1 (CPU), H2 (IO/Pool), H3 (GC/Alloc), H4 (Lock/Sync), H5 (Classload), H6 (Config), H7 (Custom)", required = false)
+            String category,
+            @ToolParam(description = "Action template name (e.g. 'hikari-pool-size', 'jar-unpack', 'jvm-opts')", required = false)
+            String template,
+            @ToolParam(description = "Outcome filter: 'KEPT' (only successful fixes) or 'REVERTED' (failed attempts)", required = false)
+            String outcome
+    ) {
+        if (!memoryConfig.enabled()) {
+            return ToolEnvelope.ok("Episodic memory is disabled for this run.");
+        }
+
+        // Guard 1: currentTargetId is server-side context; never exposed as a parameter.
+        // Guard 3: All-null DoS prevention (require at least 1 non-blank criterion)
+        if (isNullOrBlank(symptomQuery) && isNullOrBlank(category) && isNullOrBlank(template) && isNullOrBlank(outcome)) {
+            return ToolEnvelope.fail("At least one search criterion must be provided: symptomQuery, category, template, or outcome.");
+        }
+
+        String cleanSymptomQuery = isNullOrBlank(symptomQuery) ? null : symptomQuery.trim();
+        String cleanCategory     = isNullOrBlank(category)     ? null : category.trim().toUpperCase();
+        String cleanOutcome      = isNullOrBlank(outcome)      ? null : outcome.trim().toUpperCase();
+        String cleanTemplate     = isNullOrBlank(template)     ? null : template.trim();
+
+        if (!isNullOrBlank(symptomQuery) && cleanSymptomQuery.length() > 400) {
+            return ToolEnvelope.fail("symptomQuery exceeds 400 character limit (" + symptomQuery.length() + " chars). Please provide a more focused query.");
+        }
+
+        if (!isNullOrBlank(category) && !cleanCategory.matches("^H[1-7]$")) {
+            return ToolEnvelope.fail("Invalid category: '" + category + "'. Must be one of H1..H7 (e.g. H1=CPU, H2=IO, H3=GC, H4=Lock, H5=Classload, H6=Config, H7=Custom).");
+        }
+        if (!isNullOrBlank(outcome) && !Set.of("KEPT", "REVERTED").contains(cleanOutcome)) {
+            return ToolEnvelope.fail("Invalid outcome: '" + outcome + "'. Must be 'KEPT' or 'REVERTED'.");
+        }
+
+        if (!isNullOrBlank(template) && cleanTemplate.length() > 50) {
+            return ToolEnvelope.fail("template parameter exceeds maximum length of 50 characters.");
+        }
+
+        try {
+            // Guard 4 (dynamic threshold) & eval-isolation are executed inside memoryRetriever
+            MemoryQuery query = new MemoryQuery(cleanSymptomQuery, cleanCategory, cleanTemplate, cleanOutcome);
+            List<Document> memories = memoryRetriever.retrieve(query, currentTargetId);
+
+            if (memories.isEmpty()) {
+                return ToolEnvelope.ok("No matching past diagnostic runs found for criteria: " + query.toCriteriaSummary());
+            }
+            String formatted = memoryFormatter.formatForPrompt(memories, currentTargetId);
+            return ToolEnvelope.ok(formatted);
+        } catch (Exception e) {
+            log.warn("queryPastFindings failed: {}", e.getMessage());
+            return ToolEnvelope.fail("Memory search temporarily unavailable: " + e.getMessage());
+        }
+
+
+    }
+
+    private boolean isNullOrBlank(String s) {
+        return s == null || s.isBlank();
+    }
+
 }

@@ -255,6 +255,17 @@ public interface IterationDocumentFactory {
     /**
      * Converts an Evidence DB Iteration, its parent Run, and the symptom summary
      * into an atomic Document. No text splitting applied.
+     *
+     * Document text format (4 uppercase headings):
+     *   SYMPTOM: <symptomSummary>
+     *   PROPOSAL: <changeSummary> — <hypothesis.rationale> (Hypothesis <category>, Confidence <confidence>)
+     *   OUTCOME: <outcome> (KeepType: <keepType>)
+     *   FINDING: <finding>
+     *
+     * Derivation of <changeSummary> and metadata "template" from Iteration.getChange():
+     * - If kind == "template": changeSummary is template (+ params if non-empty), metadata "template" = change.template()
+     * - If kind == "edits": changeSummary is "custom-edit on <paths>", metadata "template" = "custom-edit"
+     * - Note: ChangeDto has no description field; the human-readable intent comes from iteration.getHypothesis().rationale().
      */
     Document toDocument(Iteration iteration, Run run, String symptomSummary);
 }
@@ -369,9 +380,9 @@ public interface MemoryContextFormatter {
      *   - OBSERVATION - Other Service (Reverted on different target: informative context)
      *   - BASELINE - Same Service (Kept on current target: verify if already active in codebase)
      *   - PROVEN PATTERN - Other Service (Kept on different target: high-confidence precedent)
-     * Followed by structured bullet fields:
+     * Followed by structured bullet fields (matching the Document's 4 uppercase headings + advisory):
      *   - SYMPTOM: ...
-     *   - ACTION: ...
+     *   - PROPOSAL: ...
      *   - OUTCOME: ...
      *   - FINDING: ...
      *   - ADVISORY: <Contextual rationale and guidance>
@@ -514,29 +525,29 @@ When returned by `queryPastFindings` and formatted into the tool envelope:
 
 [Experience 1] [PROVEN PATTERN - Other Service: practice-mvc-s4]
 - SYMPTOM: Load: 210 RPS, p95 1850ms. Hotspots: JavaMonitorEnter (CRITICAL, count=45200, frames=[PetClinicService.findOwners])
-- ACTION: Applied concurrency optimization on monitor.
-- OUTCOME: KEPT (RPS +62%, p95 -45%)
+- PROPOSAL: custom-edit on PetClinicService.java — Applied concurrency optimization on monitor (Hypothesis H5, Confidence 0.90)
+- OUTCOME: KEPT (KeepType: RPS)
 - FINDING: Reducing synchronized block scope resolved thread parking cascade.
 - ADVISORY: Succeeded on practice-mvc-s4 for similar lock symptoms. High-confidence candidate to investigate.
 
 [Experience 2] [CAUTION - Same Service: petclinic]
 - SYMPTOM: Load: 189 RPS, p95 2400ms. Hotspots: JavaMonitorEnter (CRITICAL, count=71738, frames=[JarFile.getBytes, URLClassPath.getLoader])
-- ACTION: hikari-pool-size=30
-- OUTCOME: REVERTED
+- PROPOSAL: hikari-pool-size {size=30} — Increase DB pool size (Hypothesis H2, Confidence 0.60)
+- OUTCOME: REVERTED (KeepType: NONE)
 - FINDING: Pool increase did not relieve lock contention on classloader.
 - ADVISORY: Attempted and REVERTED on this service earlier. Strongly discouraged unless you have clear evidence that the underlying mechanism differs.
 
 [Experience 3] [BASELINE - Same Service: petclinic]
 - SYMPTOM: Load: 189 RPS, p95 2400ms. Hotspots: JavaMonitorEnter (CRITICAL, count=71738, frames=[JarFile.getBytes, URLClassPath.getLoader])
-- ACTION: jar-unpack
-- OUTCOME: KEPT
+- PROPOSAL: jar-unpack — Unpack fat jar to eliminate UrlJarFiles monitor lock (Hypothesis H5, Confidence 0.90)
+- OUTCOME: KEPT (KeepType: P95)
 - FINDING: Unpacking jar eliminated 81% of lock contention events.
 - ADVISORY: This fix was already KEPT in an earlier run and is active in your baseline. Verify before proposing again.
 
 [Experience 4] [OBSERVATION - Other Service: petclinic-s2]
 - SYMPTOM: Load: 205 RPS, p95 1900ms. Hotspots: JavaMonitorEnter (CRITICAL, count=51200, frames=[OrderService.checkout])
-- ACTION: db-fetch-size=50
-- OUTCOME: REVERTED
+- PROPOSAL: db-fetch-size {size=50} — Tune JDBC fetch size (Hypothesis H2, Confidence 0.70)
+- OUTCOME: REVERTED (KeepType: NONE)
 - FINDING: Changing JDBC fetch size caused memory pressure without reducing lock wait.
 - ADVISORY: Reverted on petclinic-s2. Informative context: verify if your bottleneck shares the same root cause before attempting.
 ```

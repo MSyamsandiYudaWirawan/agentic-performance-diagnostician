@@ -36,29 +36,29 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /**
  * Step 8 verify gate (build-steps step 8): tools callable by the model +
  * structured decisions validated before any apply.
- *
+ * <p>
  * No-API tests (always run, plain JUnit — no Spring context, no DB, no Docker):
  * decision validation matrix + readSource confinement/cap.
- *
+ * <p>
  * API-dependent test (opt-in): one real chat turn — the §10.8 provider
  * tool-calling reliability check. Boots the evidence context (always-on
  * Postgres), builds the run-scoped runner chain, brings the stack up, and
  * asks the model to call runBenchmark. Ground truth is the k6 summary
  * artifact, not the model's prose.
- *
+ * <p>
  * Opt-in (needs ZAI_API_KEY + Docker + diag-evidence Postgres up):
- *   mvn -pl agent-core -am test "-Dstep8.gate=true" "-Dtest=Step8VerifyGate"
- *      "-Dsurefire.failIfNoSpecifiedTests=false"
- *
+ * mvn -pl agent-core -am test "-Dstep8.gate=true" "-Dtest=Step8VerifyGate"
+ * "-Dsurefire.failIfNoSpecifiedTests=false"
+ * <p>
  * Class name MUST match the file name — a mismatch makes the documented
  * -Dtest selector silently run zero tests (false green; caught 2026-09-22).
  */
 class Step8VerifyGate {
 
-    static final Path PROJECT_ROOT  = Path.of("C:/study/agentic-performance-diagnostician");
-    static final Path TARGET_REPO   = PROJECT_ROOT.resolve("targets/spring-petclinic");
+    static final Path PROJECT_ROOT = Path.of("C:/study/agentic-performance-diagnostician");
+    static final Path TARGET_REPO = PROJECT_ROOT.resolve("targets/spring-petclinic");
     static final Path EVIDENCE_ROOT = PROJECT_ROOT.resolve("evidence/artifacts");
-    static final Path BUILD_LOG     = PROJECT_ROOT.resolve("step8-gate-build.log");
+    static final Path BUILD_LOG = PROJECT_ROOT.resolve("step8-gate-build.log");
 
     ValidatorFactory factory;
     DecisionValidator validator;
@@ -187,7 +187,7 @@ class Step8VerifyGate {
     private DiagnosticTools readTools() {
         // readSource only uses targetRoot; the other collaborators are null by
         // design in this unit slice (DiagnosticTools has no null-check ctor contract)
-        return new DiagnosticTools(null, null, null, null, tempRoot);
+        return new DiagnosticTools(null, null, null, null, tempRoot, null, null, null, null);
     }
 
     @Test
@@ -256,7 +256,8 @@ class Step8VerifyGate {
                             new JfrCapture(stack, evidenceService, runId),
                             new JfrAnalyzer(Thresholds.fromEnv()),
                             new ChangeApplier(new FixTemplateRegistry()),
-                            TARGET_REPO);
+                            TARGET_REPO,
+                            null, null, null, null);
 
                     // tools assume the loop brought the stack up (§4.1) — the gate does it
                     stack.up("gate-1", jarRel);
