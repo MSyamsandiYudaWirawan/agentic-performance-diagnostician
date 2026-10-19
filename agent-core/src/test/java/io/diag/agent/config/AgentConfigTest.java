@@ -38,4 +38,19 @@ class AgentConfigTest {
         assertThat(params.temperature()).isEqualTo(0.1);
         assertThat(params.maxTokens()).isEqualTo(8192);
     }
+
+    @Test
+    void buildAdvisorOnion_returnsFiveOrderedAdvisors() {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var validator = new io.diag.agent.decision.DecisionValidator(
+                mapper, jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator());
+        var evidenceService = org.mockito.Mockito.mock(io.diag.evidence.service.EvidenceService.class);
+
+        var advisors = config.buildAdvisorOnion(
+                validator, mapper, io.diag.agent.loop.LoopConfig.defaults(), evidenceService);
+
+        assertThat(advisors).hasSize(5);
+        assertThat(advisors).extracting(org.springframework.ai.chat.client.advisor.api.CallAdvisor::getOrder)
+                .containsExactly(10, 20, 30, 40, 50);
+    }
 }

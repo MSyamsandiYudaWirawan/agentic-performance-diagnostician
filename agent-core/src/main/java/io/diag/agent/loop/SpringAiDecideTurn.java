@@ -1,7 +1,10 @@
 package io.diag.agent.loop;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.diag.agent.decision.DecisionDto;
+import io.diag.agent.advisor.DiagnosticAdvisorContracts;
+import io.diag.agent.advisor.InfraRetryAdvisor;
+import io.diag.agent.advisor.SchemaSelfHealingAdvisor;
+import io.diag.agent.advisor.TokenBudgetAdvisor;
 import io.diag.agent.decision.DecisionValidator;
 import io.diag.agent.tools.DiagnosticTools;
 import io.diag.evidence.service.EvidenceService;
@@ -10,7 +13,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -22,6 +24,10 @@ import java.util.Objects;
  *   Track 2 — model fault (bad JSON): one retry with the validation error
  *             appended; still invalid → infraFailure=false, iteration WASTED.
  *
+ * Delegates schema validation, markdown fence stripping, fallback extraction,
+ * and retry prompt formatting to {@link SchemaSelfHealingAdvisor}, and cost
+ * calculation to {@link TokenBudgetAdvisor}.
+ *
  * Sleeper is injected so tests run at 0 ms delay without Thread.sleep.
  */
 @Component
@@ -31,22 +37,16 @@ public class SpringAiDecideTurn implements DecideTurn {
 
     /** Pluggable sleep — real impl uses Thread::sleep; tests inject a no-op. */
     @FunctionalInterface
-    public interface Sleeper {
-        void sleep(long ms) throws InterruptedException;
+    public interface Sleeper extends DiagnosticAdvisorContracts.Sleeper {
     }
 
-    private static final int   INFRA_MAX_ATTEMPTS = 3;
-    private static final long  BACKOFF_FIRST_MS   = 30_000L;
-    private static final long  BACKOFF_SECOND_MS  = 60_000L;
-
-    private final ChatPort          chatPort;
-    private final DecisionValidator validator;
-    private final DiagnosticTools   diagnosticTools;
-    private final LoopConfig        loopConfig;
-    private final ObjectMapper      mapper;
-    private final EvidenceService   trajectory;
-    private final String            runId;
-    private final Sleeper           sleeper;
+    private final ChatPort                 chatPort;
+    private final DiagnosticTools          diagnosticTools;
+    private final LoopConfig               loopConfig;
+    private final EvidenceService          trajectory;
+    private final String                   runId;
+    private final Sleeper                  sleeper;
+    private final SchemaSelfHealingAdvisor schemaAdvisor;
 
     /** Production constructor — uses Thread::sleep for backoff. */
     public SpringAiDecideTurn(ChatPort chatPort,
@@ -70,13 +70,14 @@ public class SpringAiDecideTurn implements DecideTurn {
                               String runId,
                               Sleeper sleeper) {
         this.chatPort        = Objects.requireNonNull(chatPort,        "chatPort must not be null");
-        this.validator       = Objects.requireNonNull(validator,       "validator must not be null");
+        Objects.requireNonNull(validator, "validator must not be null");
         this.diagnosticTools = Objects.requireNonNull(diagnosticTools, "diagnosticTools must not be null");
         this.loopConfig      = Objects.requireNonNull(loopConfig,      "loopConfig must not be null");
-        this.mapper          = Objects.requireNonNull(mapper,          "mapper must not be null");
+        Objects.requireNonNull(mapper, "mapper must not be null");
         this.trajectory      = Objects.requireNonNull(trajectory,      "trajectory must not be null");
         this.runId           = Objects.requireNonNull(runId,           "runId must not be null");
         this.sleeper         = Objects.requireNonNull(sleeper,         "sleeper must not be null");
+        this.schemaAdvisor   = new SchemaSelfHealingAdvisor(validator, mapper);
     }
 
     @Override
@@ -88,7 +89,7 @@ public class SpringAiDecideTurn implements DecideTurn {
         trajectory.createTrajectoryEvent(runId, "LLM_REQ",
                 Map.of("iteration", n), 0L, 0L, BigDecimal.ZERO);
         String fullUserPrompt = buildFullUserPrompt(userContext, n, ctx);
-        return decideInternal(n, fullUserPrompt, reader, ctx);
+        return decideInternal(n, fullUserPrompt, reader);
     }
 
     private String buildFullUserPrompt(String userContext, int iteration, DecideContext ctx) {
@@ -162,8 +163,7 @@ public class SpringAiDecideTurn implements DecideTurn {
         return sb.toString();
     }
 
-    private DecideResult decideInternal(int n, String fullUserPrompt,
-                                        BoundedReadSource reader, DecideContext ctx) {
+    private DecideResult decideInternal(int n, String fullUserPrompt, BoundedReadSource reader) {
         long totalTokensIn  = 0L;
         long totalTokensOut = 0L;
 
@@ -185,23 +185,7 @@ public class SpringAiDecideTurn implements DecideTurn {
                 "Tokens in: " + first.tokensIn + ", out: " + first.tokensOut + "\n" + rawText);
         logLlmResp(totalTokensIn, totalTokensOut, rawText);
 
-        String stripped = stripFences(rawText);
-        var envelope = validator.validate(stripped);
-
-        if (!envelope.ok()) {
-            DecisionDto fallback = FallbackDecisionExtractor.tryExtract(rawText);
-            if (fallback != null) {
-                try {
-                    String fallbackJson = mapper.writeValueAsString(fallback);
-                    var fallbackEnvelope = validator.validate(fallbackJson);
-                    if (fallbackEnvelope.ok()) {
-                        envelope = fallbackEnvelope;
-                    }
-                } catch (Exception e) {
-                    log.debug("Fallback decision JSON conversion failed at attempt 1: {}", e.getMessage());
-                }
-            }
-        }
+        var envelope = schemaAdvisor.validateOrFallback(rawText);
 
         if (envelope.ok()) {
             LlmDebugLogger.log(runId, "DECISION ACCEPTED (Iteration " + n + ", Attempt 1)",
@@ -217,45 +201,7 @@ public class SpringAiDecideTurn implements DecideTurn {
 
         // --- Track 2: one model retry with the validation error and previous output appended ---
         // Pass NO tools (List.of()) on retry so the model cannot invoke another tool cycle.
-        String retryPrompt;
-        if (rawText != null && !rawText.isBlank()) {
-            retryPrompt = "[CRITICAL ERROR: Your previous decision was rejected because you did not output valid JSON.\n"
-                    + "Validation error: " + envelope.error() + "]\n\n"
-                    + "Your previous analysis was:\n"
-                    + "\"\"\"\n"
-                    + (rawText.length() > 2500 ? rawText.substring(0, 2500) + "..." : rawText) + "\n"
-                    + "\"\"\"\n\n"
-                    + "Convert your diagnosis above into this exact JSON format:\n"
-                    + "{\n"
-                    + "  \"hypothesis\": {\n"
-                    + "    \"category\": \"H5\",\n"
-                    + "    \"confidence\": 0.9,\n"
-                    + "    \"rationale\": \"<summary of your findings>\"\n"
-                    + "  },\n"
-                    + "  \"prediction\": {\n"
-                    + "    \"metricToImprove\": \"p95\",\n"
-                    + "    \"direction\": \"improve\",\n"
-                    + "    \"mechanismSignalToEliminate\": \"JavaMonitorEnter\"\n"
-                    + "  },\n"
-                    + "  \"ledger\": {\n"
-                    + "    \"category\": \"H5\",\n"
-                    + "    \"direction\": \"strengthen\",\n"
-                    + "    \"reason\": \"<reason from your analysis>\"\n"
-                    + "  },\n"
-                    + "  \"change\": {\n"
-                    + "    \"kind\": \"template\",\n"
-                    + "    \"template\": \"jar-unpack\",\n"
-                    + "    \"params\": {}\n"
-                    + "  }\n"
-                    + "}\n"
-                    + "OUTPUT THE RAW JSON OBJECT NOW:";
-        } else {
-            retryPrompt = fullUserPrompt
-                    + "\n\n[CRITICAL ERROR: Your previous decision was rejected with error:\n"
-                    + envelope.error()
-                    + "\nYou must output ONLY valid JSON starting with '{' and ending with '}'. "
-                    + "OUTPUT THE RAW JSON OBJECT NOW:]";
-        }
+        String retryPrompt = SchemaSelfHealingAdvisor.buildRetryPrompt(fullUserPrompt, rawText, envelope.error());
 
         LlmDebugLogger.log(runId, "LLM PROMPT (Iteration " + n + ", Attempt 2 [RETRY])", retryPrompt);
 
@@ -274,23 +220,7 @@ public class SpringAiDecideTurn implements DecideTurn {
                 "Tokens in: " + second.tokensIn + ", out: " + second.tokensOut + "\n" + rawText2);
         logLlmResp(totalTokensIn, totalTokensOut, rawText2);
 
-        String stripped2 = stripFences(rawText2);
-        var envelope2    = validator.validate(stripped2);
-
-        if (!envelope2.ok()) {
-            DecisionDto fallback2 = FallbackDecisionExtractor.tryExtract(rawText2);
-            if (fallback2 != null) {
-                try {
-                    String fallbackJson2 = mapper.writeValueAsString(fallback2);
-                    var fallbackEnvelope2 = validator.validate(fallbackJson2);
-                    if (fallbackEnvelope2.ok()) {
-                        envelope2 = fallbackEnvelope2;
-                    }
-                } catch (Exception e) {
-                    log.debug("Fallback decision JSON conversion failed at attempt 2: {}", e.getMessage());
-                }
-            }
-        }
+        var envelope2 = schemaAdvisor.validateOrFallback(rawText2);
 
         if (envelope2.ok()) {
             LlmDebugLogger.log(runId, "DECISION ACCEPTED (Iteration " + n + ", Attempt 2 [RETRY])",
@@ -316,10 +246,10 @@ public class SpringAiDecideTurn implements DecideTurn {
     // -------------------------------------------------------------------------
 
     private InfraResult callWithInfraRetry(String userPrompt, List<Object> tools) {
-        long[] backoffs = {0L, BACKOFF_FIRST_MS, BACKOFF_SECOND_MS};
+        long[] backoffs = InfraRetryAdvisor.DEFAULT_BACKOFF_MS;
         String lastError = null;
 
-        for (int attempt = 0; attempt < INFRA_MAX_ATTEMPTS; attempt++) {
+        for (int attempt = 0; attempt < InfraRetryAdvisor.DEFAULT_MAX_ATTEMPTS; attempt++) {
             if (backoffs[attempt] > 0) {
                 try {
                     sleeper.sleep(backoffs[attempt]);
@@ -335,7 +265,7 @@ public class SpringAiDecideTurn implements DecideTurn {
                 lastError = e.getMessage();
             }
         }
-        return InfraResult.fail("Infra failure after " + INFRA_MAX_ATTEMPTS + " attempts: " + lastError, 0, 0);
+        return InfraResult.fail("Infra failure after " + InfraRetryAdvisor.DEFAULT_MAX_ATTEMPTS + " attempts: " + lastError, 0, 0);
     }
 
     // -------------------------------------------------------------------------
@@ -343,7 +273,7 @@ public class SpringAiDecideTurn implements DecideTurn {
     // -------------------------------------------------------------------------
 
     private void logLlmResp(long tokensIn, long tokensOut, String rawText) {
-        BigDecimal cost = computeCost(tokensIn, tokensOut);
+        BigDecimal cost = TokenBudgetAdvisor.computeCost(loopConfig, tokensIn, tokensOut);
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("tokensIn", tokensIn);
         payload.put("tokensOut", tokensOut);
@@ -353,78 +283,9 @@ public class SpringAiDecideTurn implements DecideTurn {
         trajectory.createTrajectoryEvent(runId, "LLM_RESP", payload, tokensIn, tokensOut, cost);
     }
 
-    private BigDecimal computeCost(long tokensIn, long tokensOut) {
-        // Prices are per million tokens (per-Mtok). Zero by default until billing data (C13).
-        if (loopConfig.priceInPerMtok().compareTo(BigDecimal.ZERO) == 0
-                && loopConfig.priceOutPerMtok().compareTo(BigDecimal.ZERO) == 0) {
-            return BigDecimal.ZERO;
-        }
-        BigDecimal inCost  = loopConfig.priceInPerMtok()
-                .multiply(BigDecimal.valueOf(tokensIn))
-                .divide(BigDecimal.valueOf(1_000_000), 10, RoundingMode.HALF_UP);
-        BigDecimal outCost = loopConfig.priceOutPerMtok()
-                .multiply(BigDecimal.valueOf(tokensOut))
-                .divide(BigDecimal.valueOf(1_000_000), 10, RoundingMode.HALF_UP);
-        return inCost.add(outCost);
-    }
-
-    /**
-     * Extracts JSON content from raw LLM output (§5.7).
-     * Handles:
-     * 1. Markdown code fences with prose before/after (e.g. "The analysis shows...\n```json\n{...}\n```")
-     * 2. Direct code fences (e.g. "```json\n{...}\n```")
-     * 3. Unfenced JSON surrounded by prose (e.g. "The decision is: {...}")
-     * 4. Pure raw JSON (e.g. "{...}")
-     */
     static String stripFences(String raw) {
-        if (raw == null) return "";
-        String s = raw.trim();
-
-        // 1. Look for ```[json] ... ``` anywhere in the response
-        int fenceStart = s.indexOf("```");
-        if (fenceStart != -1) {
-            int afterFence = s.indexOf('\n', fenceStart);
-            if (afterFence != -1) {
-                int fenceEnd = s.indexOf("```", afterFence);
-                if (fenceEnd != -1) {
-                    String inside = s.substring(afterFence + 1, fenceEnd).trim();
-                    int firstBrace = findRootJsonStart(inside);
-                    int lastBrace  = inside.lastIndexOf('}');
-                    if (firstBrace != -1 && lastBrace >= firstBrace) {
-                        return inside.substring(firstBrace, lastBrace + 1).trim();
-                    }
-                    if (!inside.isEmpty()) {
-                        return inside;
-                    }
-                }
-            }
-        }
-
-        // 2. If no valid code fence or fence didn't contain braces, locate the outermost JSON object
-        int firstBrace = findRootJsonStart(s);
-        int lastBrace  = s.lastIndexOf('}');
-        if (firstBrace != -1 && lastBrace >= firstBrace) {
-            return s.substring(firstBrace, lastBrace + 1).trim();
-        }
-
-        return s;
+        return SchemaSelfHealingAdvisor.stripFences(raw);
     }
-
-    private static int findRootJsonStart(String text) {
-        // Our decision JSON root object must contain "hypothesis"
-        int hypIndex = text.indexOf("\"hypothesis\"");
-        if (hypIndex != -1) {
-            int braceBeforeHyp = text.lastIndexOf('{', hypIndex);
-            if (braceBeforeHyp != -1) {
-                return braceBeforeHyp;
-            }
-        }
-        return text.indexOf('{');
-    }
-
-    // -------------------------------------------------------------------------
-    // Private carrier — avoids returning null from callWithInfraRetry
-    // -------------------------------------------------------------------------
 
     private record InfraResult(boolean ok, String text, String error, long tokensIn, long tokensOut) {
         static InfraResult ok(String text, long tokensIn, long tokensOut) {

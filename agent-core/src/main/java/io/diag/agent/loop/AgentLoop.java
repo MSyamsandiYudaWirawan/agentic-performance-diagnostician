@@ -1,5 +1,7 @@
 package io.diag.agent.loop;
 
+import io.diag.agent.advisor.DiagnosticAdvisorContracts.BudgetExceededException;
+import io.diag.agent.advisor.TokenBudgetAdvisor;
 import io.diag.agent.config.GenParams;
 import io.diag.agent.decision.DecisionDto;
 import io.diag.agent.memory.IterationIndexer;
@@ -21,7 +23,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -145,7 +146,7 @@ public final class AgentLoop {
             baselinePhase(originSha);
             iterate(1);
             finish(RunStatus.COMPLETED);
-        } catch (GuardrailAbortedException e) {
+        } catch (GuardrailAbortedException | BudgetExceededException e) {
             finish(RunStatus.ABORTED);
         } catch (InfraFailureException e) {
             finish(RunStatus.INCOMPLETE);
@@ -279,7 +280,7 @@ public final class AgentLoop {
         try {
             iterate(startN);
             finish(RunStatus.COMPLETED);
-        } catch (GuardrailAbortedException e) {
+        } catch (GuardrailAbortedException | BudgetExceededException e) {
             finish(RunStatus.ABORTED);
         } catch (InfraFailureException e) {
             finish(RunStatus.INCOMPLETE);
@@ -523,6 +524,16 @@ public final class AgentLoop {
                         ? changeResult.filesTouched().files()
                         : List.of();
 
+        if (kd.keep()) {
+            lastKeptSha = changeResult.commitSha();
+            // reference advances on keep; floors do NOT recompute (§6)
+            baseline = new Baseline(cycle.load(), baseline.floors());
+            lastKeptJfr = cycle.jfr();
+            evidenceService.recordKeptSha(runId, lastKeptSha);
+        } else {
+            changeApplier.revertTo(targetRepo, lastKeptSha);
+        }
+
         Iteration iteration = evidenceService.createIteration(runId, n, dec.hypothesis(),
                 Map.copyOf(ledger), dec.change(),
                 kd.keep() ? "KEPT" : "REVERTED", lastKeptSha,
@@ -536,16 +547,6 @@ public final class AgentLoop {
                 dec.hypothesis().category(), dec.hypothesis().confidence(),
                 dec.change().kind(), kd.keep() ? "KEPT" : "REVERTED", null,
                 cycle.load().rps(), cycle.load().latency().p95(), finding));
-
-        if (kd.keep()) {
-            lastKeptSha = changeResult.commitSha();
-            // reference advances on keep; floors do NOT recompute (§6)
-            baseline = new Baseline(cycle.load(), baseline.floors());
-            lastKeptJfr = cycle.jfr();
-            evidenceService.recordKeptSha(runId, lastKeptSha);
-        } else {
-            changeApplier.revertTo(targetRepo, lastKeptSha);
-        }
     }
 
     // -------------------------------------------------------------------------
@@ -642,17 +643,7 @@ public final class AgentLoop {
     }
 
     private BigDecimal computeCost(long in, long out) {
-        if (loopConfig.priceInPerMtok().compareTo(BigDecimal.ZERO) == 0
-                && loopConfig.priceOutPerMtok().compareTo(BigDecimal.ZERO) == 0) {
-            return BigDecimal.ZERO;
-        }
-        BigDecimal inCost = loopConfig.priceInPerMtok()
-                .multiply(BigDecimal.valueOf(in))
-                .divide(BigDecimal.valueOf(1_000_000), 10, RoundingMode.HALF_UP);
-        BigDecimal outCost = loopConfig.priceOutPerMtok()
-                .multiply(BigDecimal.valueOf(out))
-                .divide(BigDecimal.valueOf(1_000_000), 10, RoundingMode.HALF_UP);
-        return inCost.add(outCost);
+        return TokenBudgetAdvisor.computeCost(loopConfig, in, out);
     }
 
     private String buildFinding(DecisionDto dec, LoadReportDto ref,
