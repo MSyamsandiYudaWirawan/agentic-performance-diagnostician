@@ -3,9 +3,9 @@
 [![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://openjdk.org/projects/jdk/21/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.1-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![Spring AI](https://img.shields.io/badge/Spring%20AI-2.0.1-blue.svg)](https://spring.io/projects/spring-ai)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-blue.svg)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%2B%20pgvector-blue.svg)](https://www.postgresql.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-v1.0%20Capstone%20Achieved-success.svg)](#roadmap)
+[![Status](https://img.shields.io/badge/Status-v1.1%20Episodic%20RAG%20%2B%20CallAdvisor%20Onion-success.svg)](#next-phase-plan-the-3-stage-ai-engineering-roadmap)
 
 An autonomous AI agent system designed to diagnose performance bottlenecks in Java/Spring services, apply targeted code and configuration optimizations, and rigorously prove improvement through automated load benchmarks and Java Flight Recorder (JFR) profiling.
 
@@ -31,14 +31,15 @@ An autonomous AI agent system designed to diagnose performance bottlenecks in Ja
 
 1. [Core Design Principles](#core-design-principles)
 2. [System Architecture](#system-architecture)
-3. [The Autonomous Agent Loop](#the-autonomous-agent-loop)
-4. [Keep-Rule v2 & Saddle Navigation](#keep-rule-v2--saddle-navigation)
-5. [Canonical Target Matrix (Ground Truth)](#canonical-target-matrix-ground-truth)
-6. [Evaluation Scoring & Diagnostic Triage](#evaluation-scoring--diagnostic-triage)
-7. [Reporting Pipeline (Zero Manual Collation)](#reporting-pipeline-zero-manual-collation)
-8. [Module Structure](#module-structure)
-9. [CLI Usage & Getting Started](#cli-usage--getting-started)
-10. [Next Phase Plan: The 3-Stage AI Engineering Roadmap](#next-phase-plan-the-3-stage-ai-engineering-roadmap)
+3. [The Autonomous Agent Loop & 5-Layer `CallAdvisor` Onion](#the-autonomous-agent-loop--5-layer-calladvisor-onion)
+4. [Episodic Vector Memory & Zero-Leakage RAG (`pgvector`)](#episodic-vector-memory--zero-leakage-rag-pgvector)
+5. [Keep-Rule v2 & Saddle Navigation](#keep-rule-v2--saddle-navigation)
+6. [Canonical Target Matrix (Ground Truth)](#canonical-target-matrix-ground-truth)
+7. [Evaluation Scoring & Diagnostic Triage](#evaluation-scoring--diagnostic-triage)
+8. [Reporting Pipeline (Zero Manual Collation)](#reporting-pipeline-zero-manual-collation)
+9. [Module Structure](#module-structure)
+10. [CLI Usage & Getting Started](#cli-usage--getting-started)
+11. [Next Phase Plan: The 3-Stage AI Engineering Roadmap](#next-phase-plan-the-3-stage-ai-engineering-roadmap)
 
 ---
 
@@ -64,9 +65,9 @@ The project is organized as a multi-module Maven monorepo separating concerns ac
 
 ```
 agentic-performance-diagnostician/
-├── evidence/        # Postgres persistence, Flyway migrations, schema entities, JFR/Load DTOs
+├── evidence/        # Postgres 17 + pgvector persistence, Flyway migrations, JFR/Load DTOs
 ├── target-runner/   # Docker container lifecycle, k6 load driver, JFR extraction, git patch applier
-├── agent-core/      # Spring AI orchestration, prompt engineering, decision validation, Keep-Rule v2
+├── agent-core/      # Spring AI orchestration, 5-layer CallAdvisor onion, pgvector RAG memory, Keep-Rule v2
 └── eval/            # Matrix CLI, automated ground-truth scoring, regression tables, HTML reports
 ```
 
@@ -90,9 +91,10 @@ agentic-performance-diagnostician/
    │                                                                        │
    │   ┌───────────────┐     ┌───────────────┐      ┌───────────────────┐   │
    │   │  DecideTurn   │ ──> │ ChangeApplier │ ───> │   TargetPipeline  │   │
-   │   │  (Spring AI   │     │ (Git patch    │      │  (Docker, smoke,  │   │
-   │   │   reasoning)  │     │  & templates) │      │   k6, JFR harvest)│   │
-   │   └───────▲───────┘     └───────────────┘      └─────────┬─────────┘   │
+   │   │  (5-Layer     │     │ (Git patch    │      │  (Docker, smoke,  │   │
+   │   │   Advisors +  │     │  & templates) │      │   k6, JFR harvest)│   │
+   │   │   @Tool RAG)  │     └───────────────┘      └─────────┬─────────┘   │
+   │   └───────▲───────┘                                      │             │
    │           │                                              │             │
    │           └─────────── [JFR Diff & Load Data] ───────────┘             │
    │                                                                        │
@@ -101,11 +103,11 @@ agentic-performance-diagnostician/
    │                         │ (Judge delta) │                              │
    │                         └───────┬───────┘                              │
    └─────────────────────────────────┼──────────────────────────────────────┘
-                                     │ persists all runs & traces
+                                     │ persists runs, traces & episodes
                                      ▼
                       ┌────────────────────────────────────────┐
-                      │            EvidenceService             │
-                      │    (Postgres 17 + Flyway Schema)       │
+                      │   EvidenceService & PgVectorStore      │
+                      │ (Postgres 17 + Flyway + HNSW Vectors)  │
                       └──────────────────┬─────────────────────┘
                                          │ reads DB entities
                                          ▼
@@ -123,7 +125,7 @@ agentic-performance-diagnostician/
 
 ---
 
-## The Autonomous Agent Loop
+## The Autonomous Agent Loop & 5-Layer `CallAdvisor` Onion
 
 Each target optimization runs inside `AgentLoop` as an explicit, resilient state machine. Every iteration is bounded by strict budget and safety guardrails:
 
@@ -162,13 +164,70 @@ Each target optimization runs inside `AgentLoop` as an explicit, resilient state
                ▼                                 ▼
            [KEPT]                            [REVERTED]
      Advance Last-Kept Sha              Git Reset Hard to Sha
-     Strengthen Hypothesis               Weaken Hypothesis
+     Index Episode in pgvector          Index Episode in pgvector
 ```
 
-### Safety Guardrails & Resiliency
-- **Ceilings**: Maximum dollar spend (e.g. $\$10.00$), token limit ($500{,}000$), wall-clock limit ($30\text{ min}$), and maximum iterations ($5$).
+### 5-Layer `CallAdvisor` Governance Onion (`io.diag.agent.advisor`)
+Rather than cluttering core business logic (`AgentLoop` / `SpringAiDecideTurn`) with retry loops, regex scrubbers, or token counters, every LLM call passes through a deterministic 5-layer Spring AI `CallAdvisor` interceptor chain ordered from outermost (`Order 10`) to innermost (`Order 50`):
+
+1. **`Order 10` — `SecuritySanitizerAdvisor`**: Scrubs outgoing prompts and incoming responses against secret patterns (`sk-...`, `Bearer`, `password`, JDBC credentials) and blocks prompt-injection boundaries before any payload reaches or leaves the model.
+2. **`Order 20` — `SchemaSelfHealingAdvisor`**: Validates the raw LLM output against `ProposedChangeSchemaValidator`. On structural JSON failure or markdown code-fence wrapping, automatically re-prompts the inner chain (up to `maxRetries=2`) with the exact parser error before `SpringAiDecideTurn` ever sees a failure.
+3. **`Order 30` — `TokenBudgetAdvisor`**: Enforces both a per-call prompt ceiling (estimating `chars / 4` pre-flight) and cumulative run-wide token (`500,000`) and cost (`$10.00`) ceilings, aborting runaway tool-calling loops with a typed `BudgetExceededException`.
+4. **`Order 40` — `TelemetryAndAuditAdvisor`**: Measures wall-clock latency, extracts prompt/completion token metadata, and writes structured forensic audit logs keyed by `runId` and `iterationNum`.
+5. **`Order 50` — `InfraRetryAdvisor`**: Outermost-to-network transport boundary wrapping transient HTTP timeouts, rate limits (`429`), and `5xx` provider faults with exponential backoff.
+
+### Loop-Level Safety & Resiliency
+- **Ceilings**: Maximum dollar spend ($\$10.00$), token limit ($500{,}000$), wall-clock limit ($30\text{ min}$), and maximum iterations ($5$).
 - **Partial Evidence Retention**: If a run hits an iteration ceiling or cost threshold, it transitions to `ABORTED` without discarding prior telemetry.
 - **Checkpoint Resume**: Interrupted runs can be resumed (`AgentLoop.resume(runId)`). The loop detects existing baseline records from the database (avoiding redundant $3\times$ benchmarks), executes a `git reset --hard` to `lastKeptSha` to ensure clean working tree hygiene, and continues from iteration $n$.
+
+---
+
+## Episodic Vector Memory & Zero-Leakage RAG (`pgvector`)
+
+Standard RAG pipelines retrieve static text chunks by cosine similarity. In an autonomous performance engineering agent, naive semantic search fails: code diffs do not semantically match runtime JFR stack traces, past failed experiments look identical to successful ones in vector space, and retrieving prior runs of the *same* benchmark target causes **benchmark data leakage**.
+
+Step 13 (`io.diag.agent.memory`) implements **Episodic Vector Memory** backed by PostgreSQL 17 + `pgvector` (`HNSW` cosine index) with strict server-side invariants:
+
+```
+  [Write Path: Post-Judge Indexing]                [Read Path: Active @Tool Retrieval]
+  Iteration (KEPT / REVERTED)                      LLM invokes @Tool queryPastFindings(...)
+               │                                                    │
+               ▼                                                    ▼
+  SymptomSummarizer + DocumentFactory              5 Server-Side Guards (Enabled, Budget,
+  (Embeds JFR symptom + hypothesis;                 Input Sanitization, Category Enum,
+   stores 11 structured metadata keys)              Mandatory RunContext ThreadLocal)
+               │                                                    │
+               ▼                                                    ▼
+     ┌───────────────────────────────────────────────────────────────┐
+     │        PostgreSQL 17 + pgvector (vector_store table)          │
+     │   Hybrid Search: Cosine Similarity (>= 0.65) + AST Filters    │
+     │   • Benchmark Mode: targetId != currentTargetId (Zero Leakage)│
+     │   • Production Mode: Cross-run + intra-service history allowed│
+     └───────────────────────────────┬───────────────────────────────┘
+                                     │
+                                     ▼
+                    3x Over-Fetch & Run-Level Deduplication
+                                     │
+                                     ▼
+                    MemoryContextFormatter (2x2 Advisory Matrix)
+```
+
+1. **Symptom-Forward Atomic Episode Indexing (`IterationDocumentFactory` & `SymptomSummarizer`)**:
+   - Instead of chunking raw logs, each completed `KEPT` or `REVERTED` iteration is indexed as a single atomic `Document` using deterministic UUID v3 keys (`UUID(runId + ":" + iterationNum)`) for idempotent upserts.
+   - Only the **symptom-forward narrative** (dominant JFR contention frames, p95/RPS baseline, hypothesis category `H1`–`H5`, and template summary) is embedded into vector space, while **11 structured fields** (`runId`, `targetId`, `hypothesisCategory`, `outcome`, `templateId`, `p95DeltaPct`, `rpsDeltaPct`, etc.) are stored in `JSONB` metadata for exact AST filtering.
+2. **Active `@Tool` Retrieval with 5 Server-Side Guards (`QueryPastFindingsTool`)**:
+   - Rather than bloating every prompt with unsolicited RAG dumps, the LLM actively invokes `queryPastFindings(symptomDescription, hypothesisCategory)` when investigating a bottleneck.
+   - Enforces **5 strict server-side guards**: (1) feature-flag gate, (2) per-turn call budget (`maxCallsPerTurn=2`) to prevent infinite tool loops, (3) input length cap (`500` chars), (4) `H1`–`H5` enum validation, and (5) mandatory `RunContextHolder` `ThreadLocal` context.
+3. **Dual-Mode Benchmark Isolation (`DiagnosticMemoryRetriever`)**:
+   - Uses Spring AI's programmatic `FilterExpressionBuilder` to combine cosine similarity (`threshold >= 0.65`) with metadata predicates (`outcome IN ['KEPT', 'REVERTED']` — excluding `WASTED` turns).
+   - **Zero-Leakage Guarantee**: In `BENCHMARK_ISOLATED` mode (`evalMode=true`), the retriever injects `ne("targetId", currentTargetId)` into the SQL/pgvector query AST, mathematically guaranteeing the agent can transfer cross-project architectural patterns without ever peeking at prior runs of the same benchmark target.
+   - **3× Over-Fetch Deduplication**: Fetches `topK * 3` candidates and deduplicates by `runId` (retaining only the highest-similarity episode per historical run) so a single noisy run never monopolizes all `topK` slots.
+4. **The 2×2 Advisory Matrix (`MemoryContextFormatter`)**:
+   - Formats retrieved episodes into an explicit decision matrix combining **Outcome (`KEPT` vs. `REVERTED`) × Similarity Tier (`HIGH >= 0.80` vs. `MODERATE 0.65–0.79`)**:
+     - `KEPT + HIGH`: **Strong Positive Precedent** — prioritize testing this mechanism first.
+     - `REVERTED + HIGH`: **Anti-Pattern Warning** — a similar bottleneck rejected this template; avoid repeating the dead end.
+     - `KEPT/REVERTED + MODERATE`: **Weak Signal / Caution** — cross-check against live JFR evidence before acting.
 
 ---
 
@@ -254,24 +313,46 @@ The evaluation runner outputs three self-contained artifacts directly to disk:
 ## Module Structure
 
 ```
+agent-core/src/main/java/io/diag/agent/
+├── advisor/
+│   ├── SecuritySanitizerAdvisor.java  # Order 10: Prompt-injection & secret scrubber
+│   ├── SchemaSelfHealingAdvisor.java  # Order 20: JSON schema validator & inner self-healing
+│   ├── TokenBudgetAdvisor.java        # Order 30: Per-call & cumulative run token/cost ceiling
+│   ├── TelemetryAndAuditAdvisor.java  # Order 40: Structured latency & token audit logging
+│   └── InfraRetryAdvisor.java         # Order 50: Exponential backoff for transient LLM faults
+├── memory/
+│   ├── DiagnosticMemoryRetriever.java # Hybrid pgvector cosine + AST filter & 3x deduplication
+│   ├── IterationDocumentFactory.java  # Deterministic UUID v3 episode builder (11 metadata keys)
+│   ├── IterationIndexer.java          # Post-judge indexing pipeline
+│   ├── MemoryContextFormatter.java    # 2x2 Advisory Matrix (Outcome × Similarity Tier)
+│   ├── QueryPastFindingsTool.java     # Active @Tool with 5 server-side safety guards
+│   ├── RunContextHolder.java          # ThreadLocal run/target isolation context
+│   └── SymptomSummarizer.java         # Symptom-forward narrative synthesizer
+├── loop/
+│   ├── AgentLoop.java                 # Autonomous DECIDE -> APPLY -> BENCH -> JUDGE state machine
+│   └── KeepRuleV2.java                # Classic + Verified-Mechanism saddle-safe evaluation rule
+└── turn/
+    ├── SpringAiChatPort.java          # Spring AI ChatClient + 5-layer CallAdvisor wiring
+    └── SpringAiDecideTurn.java        # Prompt assembly, bounded file reads & tool execution
+
 eval/src/main/java/io/diag/eval/
 ├── cli/
-│   ├── MatrixCli.java              # Command-line application entrypoint
-│   ├── MatrixConfig.java           # Immutable config parsing CLI flags and env vars
-│   └── MatrixExecutionResult.java   # Value record with score reports and artifact paths
+│   ├── MatrixCli.java                 # Command-line application entrypoint
+│   ├── MatrixConfig.java              # Immutable config parsing CLI flags and env vars
+│   └── MatrixExecutionResult.java     # Value record with score reports and artifact paths
 ├── model/
-│   ├── DiagnosticTriage.java        # Triage findings and recommended recovery actions
-│   ├── MatrixScoreReport.java       # Aggregated matrix pass/fail metrics
-│   ├── RegressionKey.java           # Grouping tuple (promptHash, model, aggregator)
-│   ├── RegressionRow.java           # Statistical summary row for markdown tables
-│   └── RunScore.java                # Per-run accuracy, effectiveness, efficiency score
+│   ├── DiagnosticTriage.java          # Triage findings and recommended recovery actions
+│   ├── MatrixScoreReport.java         # Aggregated matrix pass/fail metrics
+│   ├── RegressionKey.java             # Grouping tuple (promptHash, model, aggregator)
+│   ├── RegressionRow.java             # Statistical summary row for markdown tables
+│   └── RunScore.java                  # Per-run accuracy, effectiveness, efficiency score
 └── service/
-    ├── AgentLoopFactory.java        # Functional loop creator interface
-    ├── DiagnosticTriageService.java # 4-stage failure hierarchy analyzer
-    ├── EvalScorer.java              # Ground truth scoring service
-    ├── HtmlReportGenerator.java     # Offline HTML report exporter
-    ├── MatrixRunner.java            # Multi-target sequential orchestrator
-    └── RegressionTableService.java  # Grouped regression table calculator
+    ├── AgentLoopFactory.java          # Functional loop creator interface
+    ├── DiagnosticTriageService.java   # 4-stage failure hierarchy analyzer
+    ├── EvalScorer.java                # Ground truth scoring service
+    ├── HtmlReportGenerator.java       # Offline HTML report exporter
+    ├── MatrixRunner.java              # Multi-target sequential orchestrator
+    └── RegressionTableService.java    # Grouped regression table calculator
 ```
 
 ---
@@ -282,11 +363,11 @@ eval/src/main/java/io/diag/eval/
 - **JDK 21** or later
 - **Maven 3.9+**
 - **Docker & Docker Compose** (allocated $\ge 4\text{ CPUs}$, $\ge 6\text{ GB RAM}$)
-- **PostgreSQL 17** (or run via provided docker-compose)
+- **PostgreSQL 17 + `pgvector`** (`pgvector/pgvector:pg17` via provided docker-compose)
 
 ### Quick Start
 
-1. **Start the Evidence Store**:
+1. **Start the Evidence & Vector Store**:
    ```bash
    docker compose -f docker/evidence/docker-compose.yml -p diag-evidence up -d
    ```
@@ -296,8 +377,12 @@ eval/src/main/java/io/diag/eval/
    mvn clean install -DskipTests
    ```
 
-3. **Run the Master Verification Gate**:
+3. **Run the Offline Agent-Core & Evaluation Verification Gates**:
    ```bash
+   # Verify 5-Layer CallAdvisor Onion, Agent Loop, Keep-Rule v2, and Step 13 Episodic RAG Memory (64 offline unit tests)
+   mvn -pl agent-core -am test "-Dsurefire.failIfNoSpecifiedTests=false" "-Dtest=AdvisorOnionTest,SpringAiDecideTurnTest,BoundedReadSourceTest,AgentConfigTest,Step8VerifyGate,Step9VerifyGate,Step10VerifyGate,Step13VerifyGate"
+
+   # Verify Step 12 End-to-End Evaluation Matrix Gate
    mvn test -pl eval -Dtest=Step12VerifyGate
    ```
 
@@ -322,7 +407,7 @@ eval/src/main/java/io/diag/eval/
 
 ## Next Phase Plan: The 3-Stage AI Engineering Roadmap
 
-The v1.0 Capstone proved that autonomous performance diagnosis and remediation works reliably end-to-end on frontier closed models. However, true AI engineering depth requires moving beyond merely consuming hosted APIs—it means fine-tuning and training open-weights models on domain telemetry and **proving the improvement through the evaluation harness**.
+The v1.0 & v1.1 milestones proved that autonomous performance diagnosis, 5-layer `CallAdvisor` governance, and `pgvector` episodic RAG memory work reliably end-to-end on frontier closed models. However, true AI engineering depth requires moving beyond merely consuming hosted APIs—it means fine-tuning and training open-weights models on domain telemetry and **proving the improvement through the evaluation harness**.
 
 The project roadmap follows three distinct, empirical stages where every transition is a measurement, not a vibe:
 
@@ -331,12 +416,12 @@ The project roadmap follows three distinct, empirical stages where every transit
 │                          THE 3-STAGE AI MODELING ROADMAP                          │
 ├───────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                   │
-│  Stage 1: Closed Frontier Model + RAG Memory                                      │
-│  ├── Current baseline: Claude 3.7 Sonnet / OpenAI via Spring AI                   │
-│  └── Capstone: pgvector run-memory over past findings (Zero-training behavior win)│
+│  Stage 1: Closed Frontier Model + RAG Memory [COMPLETED — Step 13 Verified]       │
+│  ├── Baseline: Claude 3.7 Sonnet / OpenAI via Spring AI + 5-Layer Advisor Onion   │
+│  └── Capstone: pgvector episodic memory + active @Tool + zero-leakage AST filter  │
 │                                      │                                            │
 │                                      ▼                                            │
-│  Stage 2: Open-Weights Model Swap & Gap Quantification                            │
+│  Stage 2: Open-Weights Model Swap & Gap Quantification [NEXT MILESTONE]           │
 │  ├── Swap in Qwen 2.5 Coder / Llama 3.3 via Ollama / vLLM                         │
 │  └── Regression table measures exact accuracy, effectiveness, & cost delta        │
 │                                      │                                            │
@@ -351,15 +436,14 @@ The project roadmap follows three distinct, empirical stages where every transit
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Stage 1: Closed Frontier Model + RAG Memory (Current Milestone)
+### Stage 1: Closed Frontier Model + RAG Memory (Completed — Step 13 Verified)
 - **Objective**: Establish the gold-standard baseline on frontier models while demonstrating that proprietary experiment data improves diagnostic performance with zero model retraining.
-- **Run-Memory Capstone**:
-  - Implements vector search (`pgvector`) over historical `iteration.finding` and `LoadReport` summaries.
-  - Keyed by bottleneck category, outcome, and target architecture.
-  - Evaluated as an explicit experimental arm `(prompt_hash, model, memory)` in the regression table to prove that historical memory reduces iterations-to-convergence.
-  - *Eval-Safety Rule*: Same-target memory retrieval is prevented to eliminate benchmark contamination and train/test leakage.
+- **Delivered in Step 13 (`io.diag.agent.memory` & `io.diag.agent.advisor`)**:
+  - Implemented hybrid vector search (`pgvector` HNSW cosine similarity $\ge 0.65$ + `FilterExpressionBuilder` metadata AST predicates) over historical `KEPT` and `REVERTED` diagnostic episodes.
+  - Built `@Tool queryPastFindings` with 5 server-side guards, 3× over-fetch run-level deduplication, and the 2×2 Advisory Matrix (`MemoryContextFormatter`).
+  - Enforced **Dual-Mode Benchmark Isolation** (`targetId != currentTargetId` in `BENCHMARK_ISOLATED` mode) to mathematically prevent benchmark contamination and train/test leakage.
 
-### Stage 2: Open-Weights Model Swap & Gap Quantification
+### Stage 2: Open-Weights Model Swap & Gap Quantification (Next Milestone)
 - **Objective**: Run the exact same diagnostic matrix using open-weights models (e.g. Qwen 2.5 Coder 32B/7B, Llama 3.3 70B, Mistral) through local inference (Ollama / vLLM) or OpenAI-compatible endpoints.
 - **The Empirical Gap Measurement**:
   - Because `(prompt_hash, model)` is a first-class key in our regression table, the system quantifies the exact zero-shot accuracy, convergence, and dollar-cost delta between closed and open models.
