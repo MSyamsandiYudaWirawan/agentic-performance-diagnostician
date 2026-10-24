@@ -194,9 +194,9 @@ Step 13 (`io.diag.agent.memory`) implements **Episodic Vector Memory** backed by
   Iteration (KEPT / REVERTED)                      LLM invokes @Tool queryPastFindings(...)
                │                                                    │
                ▼                                                    ▼
-  SymptomSummarizer + DocumentFactory              5 Server-Side Guards (Enabled, Budget,
-  (Embeds JFR symptom + hypothesis;                 Input Sanitization, Category Enum,
-   stores 11 structured metadata keys)              Mandatory RunContext ThreadLocal)
+  SymptomSummarizer + DocumentFactory              6 Server-Side Guards (Flag, All-Null,
+  (Embeds JFR symptom + hypothesis;                 400c Query & 50c Template Name Caps,
+   stores up to 11 metadata keys)                   H1-H7 & KEPT/REVERTED Enum Checks)
                │                                                    │
                ▼                                                    ▼
      ┌───────────────────────────────────────────────────────────────┐
@@ -207,7 +207,7 @@ Step 13 (`io.diag.agent.memory`) implements **Episodic Vector Memory** backed by
      └───────────────────────────────┬───────────────────────────────┘
                                      │
                                      ▼
-                    3x Over-Fetch & Run-Level Deduplication
+                    3x Over-Fetch & Diversity Deduplication
                                      │
                                      ▼
                     MemoryContextFormatter (2x2 Advisory Matrix)
@@ -215,19 +215,20 @@ Step 13 (`io.diag.agent.memory`) implements **Episodic Vector Memory** backed by
 
 1. **Symptom-Forward Atomic Episode Indexing (`IterationDocumentFactory` & `SymptomSummarizer`)**:
    - Instead of chunking raw logs, each completed `KEPT` or `REVERTED` iteration is indexed as a single atomic `Document` using deterministic UUID v3 keys (`UUID(runId + ":" + iterationNum)`) for idempotent upserts.
-   - Only the **symptom-forward narrative** (dominant JFR contention frames, p95/RPS baseline, hypothesis category `H1`–`H5`, and template summary) is embedded into vector space, while **11 structured fields** (`runId`, `targetId`, `hypothesisCategory`, `outcome`, `templateId`, `p95DeltaPct`, `rpsDeltaPct`, etc.) are stored in `JSONB` metadata for exact AST filtering.
-2. **Active `@Tool` Retrieval with 5 Server-Side Guards (`QueryPastFindingsTool`)**:
-   - Rather than bloating every prompt with unsolicited RAG dumps, the LLM actively invokes `queryPastFindings(symptomDescription, hypothesisCategory)` when investigating a bottleneck.
-   - Enforces **5 strict server-side guards**: (1) feature-flag gate, (2) per-turn call budget (`maxCallsPerTurn=2`) to prevent infinite tool loops, (3) input length cap (`500` chars), (4) `H1`–`H5` enum validation, and (5) mandatory `RunContextHolder` `ThreadLocal` context.
+   - Only the **symptom-forward narrative** (dominant JFR contention frames, p95/RPS baseline, hypothesis category `H1`–`H7`, and template summary) is embedded into vector space, while **up to 11 structured fields** (`runId`, `iterationN`, `targetId`, `category`, `template`, `outcome`, `keepType`, `embeddingModel`, `schemaVersion`, plus optional `deltaP95Ms`/`deltaRps` ledger deltas) are stored in `JSONB` metadata for exact AST filtering.
+2. **Active `@Tool` Retrieval with 6 Server-Side Guards (`DiagnosticTools.queryPastFindings`)**:
+   - Rather than bloating every prompt with unsolicited RAG dumps, the LLM actively invokes `queryPastFindings(symptomQuery, category, template, outcome)` when investigating a bottleneck.
+   - Enforces **6 strict server-side guards**: (1) feature-flag gate, (2) all-null query rejection, (3) `400`-char `symptomQuery` cap, (4) `H1`–`H7` category enum validation, (5) `KEPT`/`REVERTED` outcome enum validation, and (6) `50`-char template-name cap. Loop-layer safety is separate and complementary: every decide turn gets a shared tool-call budget (`LoopConfig.toolCallBound`, default `10` via `DIAG_TOOL_BOUND`) enforced by `BoundedReadSource`, and `currentTargetId` is constructor-injected server-side state — never an LLM-visible parameter.
 3. **Dual-Mode Benchmark Isolation (`DiagnosticMemoryRetriever`)**:
    - Uses Spring AI's programmatic `FilterExpressionBuilder` to combine cosine similarity (`threshold >= 0.65`) with metadata predicates (`outcome IN ['KEPT', 'REVERTED']` — excluding `WASTED` turns).
-   - **Zero-Leakage Guarantee**: In `BENCHMARK_ISOLATED` mode (`evalMode=true`), the retriever injects `ne("targetId", currentTargetId)` into the SQL/pgvector query AST, mathematically guaranteeing the agent can transfer cross-project architectural patterns without ever peeking at prior runs of the same benchmark target.
-   - **3× Over-Fetch Deduplication**: Fetches `topK * 3` candidates and deduplicates by `runId` (retaining only the highest-similarity episode per historical run) so a single noisy run never monopolizes all `topK` slots.
+   - **Zero-Leakage Guarantee**: In benchmark isolation mode (`evaluationMode=true`), the retriever injects `ne("targetId", currentTargetId)` into the SQL/pgvector query AST, mathematically guaranteeing the agent can transfer cross-project architectural patterns without ever peeking at prior runs of the same benchmark target.
+   - **3× Over-Fetch Deduplication**: Fetches `topK * 3` candidates and deduplicates by `(targetId : template)` (retaining only the highest-similarity episode per target/template pair) so one repetitive target never monopolizes all `topK` slots.
 4. **The 2×2 Advisory Matrix (`MemoryContextFormatter`)**:
-   - Formats retrieved episodes into an explicit decision matrix combining **Outcome (`KEPT` vs. `REVERTED`) × Similarity Tier (`HIGH >= 0.80` vs. `MODERATE 0.65–0.79`)**:
-     - `KEPT + HIGH`: **Strong Positive Precedent** — prioritize testing this mechanism first.
-     - `REVERTED + HIGH`: **Anti-Pattern Warning** — a similar bottleneck rejected this template; avoid repeating the dead end.
-     - `KEPT/REVERTED + MODERATE`: **Weak Signal / Caution** — cross-check against live JFR evidence before acting.
+   - Formats retrieved episodes into an explicit decision matrix combining **Provenance (Same Service vs. Other Service) × Outcome (`KEPT` vs. `REVERTED`)**:
+     - `KEPT` + Same Service: **`[BASELINE]`** — previously verified fix, already active on this target.
+     - `REVERTED` + Same Service: **`[CAUTION]`** — attempted and reverted here; do not repeat verbatim without new evidence.
+     - `KEPT` + Other Service: **`[PROVEN PATTERN]`** — succeeded on another service; high-confidence candidate to investigate.
+     - `REVERTED` + Other Service: **`[OBSERVATION]`** — reverted elsewhere; check whether the root cause matches before attempting.
 
 ---
 
@@ -322,11 +323,11 @@ agent-core/src/main/java/io/diag/agent/
 │   └── InfraRetryAdvisor.java         # Order 50: Exponential backoff for transient LLM faults
 ├── memory/
 │   ├── DiagnosticMemoryRetriever.java # Hybrid pgvector cosine + AST filter & 3x deduplication
-│   ├── IterationDocumentFactory.java  # Deterministic UUID v3 episode builder (11 metadata keys)
+│   ├── IterationDocumentFactory.java  # Deterministic UUID v3 episode builder (up to 11 metadata keys)
 │   ├── IterationIndexer.java          # Post-judge indexing pipeline
-│   ├── MemoryContextFormatter.java    # 2x2 Advisory Matrix (Outcome × Similarity Tier)
-│   ├── QueryPastFindingsTool.java     # Active @Tool with 5 server-side safety guards
-│   ├── RunContextHolder.java          # ThreadLocal run/target isolation context
+│   ├── MemoryConfig.java              # Feature flag, topK, thresholds, eval mode
+│   ├── MemoryContextFormatter.java    # 2x2 Advisory Matrix (Provenance × Outcome)
+│   ├── MemoryQuery.java               # Read-path query record (symptom/category/template/outcome)
 │   └── SymptomSummarizer.java         # Symptom-forward narrative synthesizer
 ├── loop/
 │   ├── AgentLoop.java                 # Autonomous DECIDE -> APPLY -> BENCH -> JUDGE state machine
@@ -430,7 +431,7 @@ The project roadmap follows three distinct, empirical stages where every transit
 │  ├── 3a. Deep Learning & Transformer Foundations (Backprop, Attention, KV Cache)  │
 │  ├── 3b. LoRA/QLoRA SFT on kept trajectories (Rejection sampling on proven traces)│
 │  ├── 3c. DPO Preference Optimization (Keep-Rule v2 acts as grounded reward model) │
-│  └── 3d. Small Specialist Routing Classifier (JFR signature -> H1-H5 routing)     │
+│  └── 3d. Small Specialist Routing Classifier (JFR signature -> H1-H7 routing)     │
 │                                                                                   │
 │  [Proof Artifact]: 1-Page Empirical Scorecard (Trained Open vs Frontier Closed)   │
 └───────────────────────────────────────────────────────────────────────────────────┘
@@ -440,7 +441,7 @@ The project roadmap follows three distinct, empirical stages where every transit
 - **Objective**: Establish the gold-standard baseline on frontier models while demonstrating that proprietary experiment data improves diagnostic performance with zero model retraining.
 - **Delivered in Step 13 (`io.diag.agent.memory` & `io.diag.agent.advisor`)**:
   - Implemented hybrid vector search (`pgvector` HNSW cosine similarity $\ge 0.65$ + `FilterExpressionBuilder` metadata AST predicates) over historical `KEPT` and `REVERTED` diagnostic episodes.
-  - Built `@Tool queryPastFindings` with 5 server-side guards, 3× over-fetch run-level deduplication, and the 2×2 Advisory Matrix (`MemoryContextFormatter`).
+  - Built `@Tool queryPastFindings` with 6 server-side guards, 3× over-fetch diversity deduplication (`targetId : template`), and the 2×2 Advisory Matrix (`MemoryContextFormatter`).
   - Enforced **Dual-Mode Benchmark Isolation** (`targetId != currentTargetId` in `BENCHMARK_ISOLATED` mode) to mathematically prevent benchmark contamination and train/test leakage.
 
 ### Stage 2: Open-Weights Model Swap & Gap Quantification (Next Milestone)
@@ -460,7 +461,7 @@ Rather than relying on generic synthetic data, this project manufactures its own
      $$\text{Preferred: } \tau_{\text{kept}} \succ \text{Dispreferred: } \tau_{\text{reverted}}$$
    - Keep-Rule v2 acts as an objective, physical reward model—requiring zero subjective human labeling.
 3. **Specialist JFR Routing Classifier**:
-   - A lightweight classical ML model trained on JFR event distribution vectors to route directly to hypothesis categories (`H1`–`H5`), bypassing LLM inference for 80% of routine cases and dramatically slashing operational costs.
+   - A lightweight classical ML model trained on JFR event distribution vectors to route directly to hypothesis categories (`H1`–`H7`), bypassing LLM inference for 80% of routine cases and dramatically slashing operational costs.
 
 ### The Ultimate Proof Artifact
 A single-page, empirical scorecard comparing the fine-tuned open-weights model against the frontier closed model across the S1–S4 matrix, detailing accuracy, convergence rate, latency reduction, and 10x lower inference cost.
