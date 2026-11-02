@@ -1,0 +1,35 @@
+# NB: the agent-core jar ships its own application.properties (diag.memory.*,
+# embedding endpoint/key, pgvector HNSW/COSINE, Flyway vector dimension) — Spring
+# merges it with this file; keys there and here are disjoint by design.
+server:
+  port: 8085
+
+spring:
+  ai:
+    # The OpenAI starter auto-configures the full model family (chat/audio/image)
+    # off the GLOBAL key, not just the embedding one agent-core's properties set —
+    # without this the audio-speech factory throws at boot. Same offline-dummy
+    # convention as agent-core: only a real embed call needs a real key.
+    openai:
+      api-key: ${EMBEDDING_API_KEY:dummy-key-for-offline}
+    mcp:
+      server:
+        name: diag-memory-mcp-server
+        version: 1.0.0
+        type: sync
+        protocol: streamable
+        streamable-http:
+          mcp-endpoint: /api/v1/mcp
+  datasource:
+    # docker/evidence/docker-compose.yml defaults: db=diagnostician, user/pass=diag/diag.
+    # stringtype=unspecified is mandatory for jsonb binding (§ step-1 lessons).
+    url: ${DIAG_DB_URL:jdbc:postgresql://localhost:5432/diagnostician?stringtype=unspecified}
+    username: ${DIAG_DB_USERNAME:diag}
+    password: ${DIAG_DB_PASSWORD:diag}
+
+# io.diag.evidence scan pulls ArtifactStore into the context; this server never
+# persists artifacts — keep the lazily created root inside target/ instead of cwd.
+evidence:
+  artifacts-root: target/mcp-artifacts
+
+

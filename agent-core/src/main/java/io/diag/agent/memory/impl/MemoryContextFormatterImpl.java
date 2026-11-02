@@ -2,10 +2,12 @@ package io.diag.agent.memory.impl;
 
 import io.diag.agent.memory.MemoryContextFormatter;
 import org.springframework.ai.document.Document;
+import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
 
+@Component
 public class MemoryContextFormatterImpl implements MemoryContextFormatter {
 
     @Override
