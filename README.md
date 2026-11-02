@@ -33,13 +33,14 @@ An autonomous AI agent system designed to diagnose performance bottlenecks in Ja
 2. [System Architecture](#system-architecture)
 3. [The Autonomous Agent Loop & 5-Layer `CallAdvisor` Onion](#the-autonomous-agent-loop--5-layer-calladvisor-onion)
 4. [Episodic Vector Memory & Zero-Leakage RAG (`pgvector`)](#episodic-vector-memory--zero-leakage-rag-pgvector)
-5. [Keep-Rule v2 & Saddle Navigation](#keep-rule-v2--saddle-navigation)
-6. [Canonical Target Matrix (Ground Truth)](#canonical-target-matrix-ground-truth)
-7. [Evaluation Scoring & Diagnostic Triage](#evaluation-scoring--diagnostic-triage)
-8. [Reporting Pipeline (Zero Manual Collation)](#reporting-pipeline-zero-manual-collation)
-9. [Module Structure](#module-structure)
-10. [CLI Usage & Getting Started](#cli-usage--getting-started)
-11. [Next Phase Plan: The 3-Stage AI Engineering Roadmap](#next-phase-plan-the-3-stage-ai-engineering-roadmap)
+5. [Model Context Protocol (MCP) & Enterprise Knowledge Federation](#model-context-protocol-mcp--enterprise-knowledge-federation)
+6. [Keep-Rule v2 & Saddle Navigation](#keep-rule-v2--saddle-navigation)
+7. [Canonical Target Matrix (Ground Truth)](#canonical-target-matrix-ground-truth)
+8. [Evaluation Scoring & Diagnostic Triage](#evaluation-scoring--diagnostic-triage)
+9. [Reporting Pipeline (Zero Manual Collation)](#reporting-pipeline-zero-manual-collation)
+10. [Module Structure](#module-structure)
+11. [CLI Usage & Getting Started](#cli-usage--getting-started)
+12. [Next Phase Plan: The 3-Stage AI Engineering Roadmap](#next-phase-plan-the-3-stage-ai-engineering-roadmap)
 
 ---
 
@@ -229,6 +230,66 @@ Step 13 (`io.diag.agent.memory`) implements **Episodic Vector Memory** backed by
      - `REVERTED` + Same Service: **`[CAUTION]`** — attempted and reverted here; do not repeat verbatim without new evidence.
      - `KEPT` + Other Service: **`[PROVEN PATTERN]`** — succeeded on another service; high-confidence candidate to investigate.
      - `REVERTED` + Other Service: **`[OBSERVATION]`** — reverted elsewhere; check whether the root cause matches before attempting.
+
+---
+
+## Model Context Protocol (MCP) & Enterprise Knowledge Federation
+
+In an enterprise engineering organization, performance troubleshooting is not confined to a single isolated CLI agent. Developers diagnose incidents interactively inside **Cursor, Claude Desktop, or Antigravity**, while multi-service CI pipelines independently triage regressions across distributed services.
+
+To decouple centralized diagnostic memory from local execution environments, the architecture introduces **Model Context Protocol (MCP)** federation over **Streamable HTTP**:
+
+```
+ ┌────────────────────────┐      ┌─────────────────────────┐      ┌───────────────────────┐
+ │   Claude Desktop /     │      │   Autonomous CI Agent   │      │   Developer IDE /     │
+ │   Incident Slack Bot   │      │   (Pull Request Bot)    │      │   Cursor / Antigravity│
+ └───────────┬────────────┘      └────────────┬────────────┘      └───────────┬───────────┘
+             │                                │                               │
+             │   MCP over Streamable HTTP     │                               │
+             ▼                                ▼                               ▼
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                           MCP Diagnostic Knowledge Server                                 │
+│                                                                                           │
+│  [Read Tool: query_past_findings]                   [Resource: diagnostics://cases/{id}]  │
+│  • Hybrid pgvector similarity + AST filters         • Structured audit JSON / JFR signals │
+│                                                                                           │
+│  [On-Demand Observability: run_diagnostic_benchmark]     
+                                 │
+│  • Inputs: { repoUrl, commitSha, loadProfile }                                            │
+│  • Non-Ingesting Profiling: Runs isolated k6 load test + captures binary JFR signals      │
+│  • Returns: LoadReportDto (RPS, p50/p95/p99) + JfrReportDto (locks, GC, threads)          │
+│                                                                                           │
+│  [Enterprise Benchmark-as-a-Service: verify_and_index_optimization]                       │
+│  • Inputs: { repoUrl, baseCommitSha, gitPatch, loadProfile }                              │
+│  • Isolated Execution: Checks out code, applies patch, builds Docker & runs k6 + JFR      │
+│  • Objective Keep-Rule v2 Evaluation: Eliminates caller metric tampering & poisoning      │
+│  • Automatic Ingestion: Stores verified KEPT/REVERTED findings in pgvector (UUIDv3)       │
+│  • Returns: Verified LoadReportDto, JFR diff, and empirical verdict to the caller         │
+└─────────────────────────────────────────────┬─────────────────────────────────────────────┘
+                                              │
+                                              ▼
+                             PostgreSQL 17 + pgvector HNSW
+```
+
+### 1. Read-Path Knowledge Federation (`query_past_findings`)
+- **Stateless & Read-Only**: Clients query past diagnostic episodes without requiring direct JDBC database credentials or network access to PostgreSQL 17.
+- **Full Guardrail Preservation**: Preserves server-side input sanitization, category validation (`H1`–`H7`), 3× over-fetch diversity deduplication, and the 2×2 Advisory Matrix.
+- **Cross-Service Knowledge Sharing**: Allows human developers or secondary agents to ask: *"Have we ever encountered classloader lock contention under high concurrency in any of our Java 21 services?"* and instantly receive verified, benchmark-proven past fixes.
+
+### 2. On-Demand Observability: Benchmark-Only Tool (`run_diagnostic_benchmark` Roadmap)
+Before proposing or committing a patch, developers and external agents often need authoritative profiling data on a suspect service without polluting institutional memory:
+- **Zero-Side-Effect Diagnostics**: Takes `{ repoUrl, commitSha, loadProfile }`, spins up the target service inside an isolated Docker runner, runs a k6 load test, and extracts JFR profiling metrics.
+- **Rich Diagnostic Return**: Returns raw `LoadReportDto` (RPS, latency percentiles) and `JfrReportDto` (lock contention, thread parks, GC pause times, CPU sample stacks).
+- **No Vector Ingestion**: Does **not** write to `pgvector`, providing a completely safe sandbox for ad-hoc exploration, debugging, or developers who want insights without contributing to company memory.
+
+### 3. Enterprise Benchmark-as-a-Service (`verify_and_index_optimization` Roadmap)
+Allowing external agents to directly insert self-reported metrics into episodic memory introduces a fatal vulnerability: **Vector Store Poisoning** (garbage-in-garbage-out from hallucinating or uncalibrated models).
+
+Rather than exposing a naive `index_iteration(metrics, outcome)` tool, the enterprise architecture exposes **Benchmark-as-a-Service**:
+1. **Code-Only Ingestion**: The external caller (e.g. GitHub Actions PR bot or IDE) provides only the code coordinates: `{ repoUrl, baseCommitSha, gitPatch, loadProfile }`. The caller **never** provides self-reported performance numbers.
+2. **Authoritative Sandboxed Verification**: The diagnostic platform checks out the repository, executes the $3\times$ baseline load test, applies the patch in an isolated Docker container, runs the smoke test, and executes the benchmark under peak load with native JFR profiling.
+3. **Objective Ground-Truth Indexing**: The platform's internal `KeepRule v2` mathematically evaluates the result. Only iterations that produce real, verified outcomes (`KEPT` or `REVERTED`) are automatically indexed into PostgreSQL 17 + `pgvector` with deterministic UUIDv3 keys.
+4. **Verifiable Feedback Loop**: The caller receives an objective audit report, JFR signal diff, and verdict—achieving 100% immune, tamper-proof institutional memory.
 
 ---
 
